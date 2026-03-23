@@ -36,7 +36,13 @@ def _get_args_megatron(config: DictConfig):
     config_dict = OmegaConf.to_container(config, resolve=True)
     config_dict = config_dict["train"]
 
+    root_level_args = {
+        key: value
+        for key, value in config_dict.items()
+        if key not in {"system", "model", "data"}
+    }
     new_config_dict = {}
+    new_config_dict.update(root_level_args)
     new_config_dict.update(config_dict["system"])
     new_config_dict.update(config_dict["model"])
     new_config_dict.update(config_dict["data"])

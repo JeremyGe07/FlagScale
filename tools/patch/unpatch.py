@@ -15,6 +15,13 @@ FLAGSCALE_BACKEND = "FlagScale"
 logger = get_unpatch_logger()
 
 
+def get_submodule_paths(repo, submodule_name):
+    relative_path = os.path.join("third_party", submodule_name)
+    git_modules_path = repo.git.rev_parse("--git-path", os.path.join("modules", relative_path)).strip()
+    worktree_path = os.path.join(repo.working_tree_dir, relative_path)
+    return git_modules_path, worktree_path
+
+
 def apply_patches_from_directory(src_dir, dst_dir):
     if not os.path.isdir(src_dir):
         logger.warning(f"Patch directory '{src_dir}' does not exist. Nothing to apply.")
@@ -72,10 +79,11 @@ def init_submodule(main_path, dst, submodule_name, force=False, commit=None):
     retry_times = 2
     for _ in range(retry_times):
         try:
-            git_modules_path = os.path.join(main_path, ".git", "modules", submodule_name)
+            git_modules_path, submodule_worktree_path = get_submodule_paths(
+                repo, os.path.basename(submodule_name)
+            )
             if os.path.exists(git_modules_path):
                 shutil.rmtree(git_modules_path)
-            submodule_worktree_path = os.path.join(main_path, submodule_name)
             if os.path.exists(submodule_worktree_path):
                 shutil.rmtree(submodule_worktree_path)
             submodule.update(init=True, force=force)

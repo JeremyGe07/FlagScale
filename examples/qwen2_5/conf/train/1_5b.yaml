@@ -38,7 +38,7 @@ model:
   norm_epsilon: 1e-6
   norm_init_weight: 0.02
   use_rotary_position_embeddings: true
-  rotary_base: 1000000.0
+  rotary_base: 1000000
   no_position_embedding: true
   reset_position_ids: true
   add_qkv_bias: true
@@ -75,6 +75,7 @@ data:
   split: 1
   apply_sft_dataset_separated_loss_mask_if_existed: true
   tokenizer:
+    legacy_tokenizer: true
     tokenizer_type: HFTokenizerFS
     tokenizer_path: ${HF_model_path:??}
     vocab_size: 151665

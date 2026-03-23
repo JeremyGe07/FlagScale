@@ -21,6 +21,23 @@ check_package_version() {
     return 1
 }
 
+configure_cudnn_env() {
+    local site_packages_dir=""
+    local cudnn_root=""
+
+    site_packages_dir=$(python -c "import site; print(site.getsitepackages()[0])")
+    cudnn_root="${site_packages_dir}/nvidia/cudnn"
+
+    if [ ! -d "$cudnn_root/include" ] || [ ! -d "$cudnn_root/lib" ]; then
+        return 1
+    fi
+
+    export CUDNN_PATH="$cudnn_root"
+    export CUDNN_INCLUDE_PATH="$cudnn_root/include"
+    export CUDNN_LIBRARY_PATH="$cudnn_root/lib"
+    export LD_LIBRARY_PATH="$cudnn_root/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+}
+
 # Extract CUDA version and format as cu128, cu124, etc.
 CUDA_VERSION=$(nvcc --version | grep "Cuda compilation tools" | awk '{print $5}' | tr -d ',')
 CUDA_MAJOR=$(echo $CUDA_VERSION | cut -d '.' -f 1)
@@ -78,23 +95,25 @@ else
     cu=$(nvcc --version | grep "Cuda compilation tools" | awk '{print $5}' | cut -d '.' -f 1)
     torch=$(pip show torch | grep Version | awk '{print $2}' | cut -d '+' -f 1 | cut -d '.' -f 1,2)
     cp=$(python3 --version | awk '{print $2}' | awk -F. '{print $1$2}')
-    cxx=$(g++ --version | grep 'g++' | awk '{print $3}' | cut -d '.' -f 1)
+    cxx11abi=$(python -c "import torch; print('TRUE' if torch.compiled_with_cxx11_abi() else 'FALSE')")
     flash_attn_version="2.8.0.post2"
-    # pip install --no-cache-dir --verbose ./install/flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx${cxx}abiFALSE-cp${cp}-cp${cp}-linux_x86_64.whl
-    pip install --no-cache-dir --verbose https://github.com/Dao-AILab/flash-attention/releases/download/v${flash_attn_version}/flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx${cxx}abiFALSE-cp${cp}-cp${cp}-linux_x86_64.whl
+    flash_attn_wheel="flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx11abi${cxx11abi}-cp${cp}-cp${cp}-linux_x86_64.whl"
+    pip install --no-cache-dir --verbose "https://github.com/Dao-AILab/flash-attention/releases/download/v${flash_attn_version}/${flash_attn_wheel}"
 fi
 
 # Install TransformerEngine for megatron-lm
 if check_package_installed "transformer_engine"; then
     echo "✓ transformer_engine is already installed, skipping..."
 else
-    echo "Installing TransformerEngine (commit e9a5fa4e)"
+    configure_cudnn_env || true
+    python -m pip uninstall -y transformer-engine transformer-engine-torch >/dev/null 2>&1 || true
+    echo "Installing TransformerEngine (commit 0289e76380088358a584d809faf69effab1a7cda)"
     git clone --recursive https://github.com/NVIDIA/TransformerEngine.git
     cd TransformerEngine
-    git checkout e9a5fa4e  # Date:   Thu Sep 4 22:39:53 2025 +0200
-    uv pip install --no-build-isolation --verbose . 
+    git checkout 0289e76380088358a584d809faf69effab1a7cda
+    NVTE_FRAMEWORK=pytorch python -m pip install --no-build-isolation --verbose .
     cd ..
-    rm -r ./TransformerEngine
+    rm -rf ./TransformerEngine
 fi
 
 # Install Apex for megatron-lm
@@ -108,4 +127,3 @@ else
     cd ..
     rm -r ./apex
 fi
-

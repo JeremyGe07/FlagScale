@@ -10,6 +10,54 @@ print_help() {
     echo "  --omni_infer <value>               Specify omni inference value (optional)"
 }
 
+source_conda_shell() {
+    local conda_sh=""
+
+    if [ -n "${CONDA_EXE:-}" ]; then
+        conda_sh="$(dirname "$(dirname "$CONDA_EXE")")/etc/profile.d/conda.sh"
+    elif command -v conda >/dev/null 2>&1; then
+        conda_sh="$(conda info --base 2>/dev/null)/etc/profile.d/conda.sh"
+    fi
+
+    if [ ! -f "$conda_sh" ]; then
+        for candidate in \
+            "$HOME/miniconda3/etc/profile.d/conda.sh" \
+            "/usr/local/miniconda/etc/profile.d/conda.sh" \
+            "/opt/conda/etc/profile.d/conda.sh"
+        do
+            if [ -f "$candidate" ]; then
+                conda_sh="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ ! -f "$conda_sh" ]; then
+        echo "Error: Unable to locate conda.sh. Please initialize Conda before running this script."
+        exit 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$conda_sh"
+}
+
+configure_cudnn_env() {
+    local site_packages_dir=""
+    local cudnn_root=""
+
+    site_packages_dir=$(python -c "import site; print(site.getsitepackages()[0])")
+    cudnn_root="${site_packages_dir}/nvidia/cudnn"
+
+    if [ ! -d "$cudnn_root/include" ] || [ ! -d "$cudnn_root/lib" ]; then
+        return 1
+    fi
+
+    export CUDNN_PATH="$cudnn_root"
+    export CUDNN_INCLUDE_PATH="$cudnn_root/include"
+    export CUDNN_LIBRARY_PATH="$cudnn_root/lib"
+    export LD_LIBRARY_PATH="$cudnn_root/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+}
+
 # Initialize the variable
 env=""
 llama_cpp_backend="cpu"
@@ -50,7 +98,7 @@ fi
 echo "Setting up environment for: $env"
 
 # Load conda environment
-source ~/miniconda3/etc/profile.d/conda.sh
+source_conda_shell
 
 # Accept the TOS from the main channel
 conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
@@ -79,6 +127,10 @@ fi
 conda activate flagscale-${env}
 
 if [ "$env" == "train" ] || [ "$env" == "inference" ]; then
+    if ! command -v uv >/dev/null 2>&1; then
+        python -m pip install uv
+    fi
+
     # This command updates `setuptools` to the latest version, ensuring compatibility and access to the latest features for Python package management.
     uv pip install --upgrade setuptools
 
@@ -88,13 +140,17 @@ if [ "$env" == "train" ] || [ "$env" == "inference" ]; then
     uv pip install -r ./requirements/requirements-common.txt
 
     # TransformerEngine
-    # Megatron-LM requires TE >= 2.1.0.
+    # Megatron-LM on this legacy branch pins TransformerEngine to release_v2.7.
+    # Build TE against the active torch wheel to avoid PyTorch ABI mismatches.
+    rm -rf ./TransformerEngine
+    configure_cudnn_env || true
+    python -m pip uninstall -y transformer-engine transformer-engine-torch >/dev/null 2>&1 || true
     git clone --recursive https://github.com/NVIDIA/TransformerEngine.git
     cd TransformerEngine
-    git checkout e9a5fa4e  # Date:   Thu Sep 4 22:39:53 2025 +0200
-    uv pip install .
+    git checkout 0289e76380088358a584d809faf69effab1a7cda  # Megatron-LM release_v2.7 pin
+    NVTE_FRAMEWORK=pytorch python -m pip install --no-build-isolation .
     cd ..
-    rm -r ./TransformerEngine
+    rm -rf ./TransformerEngine
 
     # cudnn frontend
     uv pip install nvidia-cudnn-cu12==9.7.1.26
@@ -102,15 +158,16 @@ if [ "$env" == "train" ] || [ "$env" == "inference" ]; then
     python -c "import torch; print('cuDNN version:', torch.backends.cudnn.version());"
     python -c "from transformer_engine.pytorch.utils import get_cudnn_version; get_cudnn_version()"
 
-    # Megatron-LM requires flash-attn >= 2.1.1, <= 2.7.3
+    # FlashAttention release assets encode the libstdc++ ABI, not the compiler major version.
     cu=$(nvcc --version | grep "Cuda compilation tools" | awk '{print $5}' | cut -d '.' -f 1)
     torch=$(pip show torch | grep Version | awk '{print $2}' | cut -d '+' -f 1 | cut -d '.' -f 1,2)
     cp=$(python3 --version | awk '{print $2}' | awk -F. '{print $1$2}')
-    cxx=$(g++ --version | grep 'g++' | awk '{print $3}' | cut -d '.' -f 1)
+    cxx11abi=$(python -c "import torch; print('TRUE' if torch.compiled_with_cxx11_abi() else 'FALSE')")
     flash_attn_version="2.8.0.post2"
-    wget --continue --timeout=60 --no-check-certificate --tries=5 --waitretry=10 https://github.com/Dao-AILab/flash-attention/releases/download/v${flash_attn_version}/flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx${cxx}abiFALSE-cp${cp}-cp${cp}-linux_x86_64.whl
-    uv pip install --no-cache-dir flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx${cxx}abiFALSE-cp${cp}-cp${cp}-linux_x86_64.whl
-    rm flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx${cxx}abiFALSE-cp${cp}-cp${cp}-linux_x86_64.whl
+    flash_attn_wheel="flash_attn-${flash_attn_version}+cu${cu}torch${torch}cxx11abi${cxx11abi}-cp${cp}-cp${cp}-linux_x86_64.whl"
+    wget --continue --timeout=60 --no-check-certificate --tries=5 --waitretry=10 "https://github.com/Dao-AILab/flash-attention/releases/download/v${flash_attn_version}/${flash_attn_wheel}"
+    uv pip install --no-cache-dir "${flash_attn_wheel}"
+    rm "${flash_attn_wheel}"
 
     # From Megatron-LM log
     uv pip install --no-build-isolation "git+https://github.com/Dao-AILab/flash-attention.git@v2.7.2#egg=flashattn-hopper&subdirectory=hopper"
