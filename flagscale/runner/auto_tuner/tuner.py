@@ -123,9 +123,6 @@ class AutoTuner:
         # History strategy
         self.history = self.recorder.read()
 
-        # resume searcher idx
-        self.searcher.algo.idx = max(0, int(self.find_search_num_value(log_path)) - 1)
-
         # Each task has its own runner
         self.runner = None
 
@@ -147,14 +144,16 @@ class AutoTuner:
         # The history pruned count
         self.pruner.pruned_count = int(self.find_pruned_num_value(log_path))
 
-        # Task id
-        self.idx = self.searcher.algo.idx - self.pruner.pruned_count
-
-        # clear breakpoint task log
-        if self.searcher.algo.idx >= 0:
+        searched_num = int(self.find_search_num_value(log_path))
+        if searched_num > 0:
+            self.searcher.algo.idx = searched_num - 1
+            self.idx = self.searcher.algo.idx - self.pruner.pruned_count
             breakpoint_task_path = os.path.join(dir_path, "task_" + str(self.idx + 1))
             self.clear_log(breakpoint_task_path)
             self.searcher.algo.idx = self.idx - 1
+        else:
+            self.searcher.algo.idx = 0
+            self.idx = self.searcher.algo.idx - self.pruner.pruned_count
 
         # Checkout search mode on the platform
         self.has_checkout = False

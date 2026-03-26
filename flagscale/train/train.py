@@ -2937,6 +2937,7 @@ def evaluate(
     verbose=False,
     non_loss_data_func=None,
     extra_valid_index=None,
+    eval_iters=None,
 ):
     """Evaluation."""
     args = get_args()

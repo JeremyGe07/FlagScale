@@ -6,6 +6,7 @@ import subprocess
 
 import numpy as np
 import pandas as pd
+from omegaconf import OmegaConf
 
 
 class Recorder:
@@ -308,6 +309,8 @@ class Recorder:
             return ""
         if isinstance(v, (int, float, bool, str)):
             return str(v)
+        if OmegaConf.is_config(v):
+            v = OmegaConf.to_container(v, resolve=True)
         return json.dumps(v)
 
     def save(self, history):

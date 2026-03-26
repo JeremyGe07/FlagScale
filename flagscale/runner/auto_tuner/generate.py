@@ -42,6 +42,21 @@ class Generator:
                     continue
                 config.train.system[value] = strategy[key]
 
+    def _set_auto_tune_train_iters(self, config):
+        control = config.experiment.auto_tuner.get("control", {})
+        train_iters = control.get("train_iters", 5)
+        config.train.model.train_iters = train_iters
+
+        scheduler = config.train.model.optimizer.lr_scheduler
+        if "lr_warmup_iters" not in scheduler:
+            return
+
+        max_warmup_iters = max(train_iters - 1, 0)
+        scheduler.lr_warmup_iters = min(scheduler.lr_warmup_iters, max_warmup_iters)
+
+    def _disable_validation(self, config):
+        config.train.model.eval_iters = 0
+
     def gen(self, strategy):
         config = copy.deepcopy(self.config)
         self._set_value(strategy, config)
@@ -78,13 +93,9 @@ class Generator:
             if "save_interval" in config.train.system.checkpoint:
                 config.train.system.checkpoint.save_interval = 2000
 
-        # Set train_iters of each task
-        if "control" in config.experiment.auto_tuner:
-            config.train.model.train_iters = config.experiment.auto_tuner.control.get(
-                "train_iters", 5
-            )
-        else:
-            config.train.model.train_iters = 5
+        # Set train_iters of each task and keep the scheduler valid for short autotune runs.
+        self._set_auto_tune_train_iters(config)
+        self._disable_validation(config)
 
         # log dir
         config.experiment.exp_dir = os.path.join(
