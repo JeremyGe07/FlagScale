@@ -17,13 +17,13 @@ system:
     wandb_project: "train-qwen2.5-1.5B"
     wandb_exp_name: "train-qwen2.5-1.5B"
   checkpoint:
-    load: ${megatron_model__path:}
+    # load: ${megatron_model__path:}
     # If you want to train the model, you need to comment out ckpt_format, ckpt_convert_format, ckpt_convert_save, which are used for converting ckpt.
-    ckpt_format: torch_dist # ${experiment.ckpt_format}
-    ckpt_convert_format: torch # ${experiment.ckpt_convert_format}
-    ckpt_convert_save: ${experiment.ckpt_convert_save}
+    # ckpt_format: torch_dist # ${experiment.ckpt_format}
+    # ckpt_convert_format: torch # ${experiment.ckpt_convert_format}
+    # ckpt_convert_save: ${experiment.ckpt_convert_save}
     save_interval: 5000000
-    rampup_save_interval: 50000
+    # rampup_save_interval: 50000
 
 model:
   use_mcore_models: true
@@ -51,11 +51,13 @@ model:
   hidden_dropout: 0.0
   weight_decay: 0.0
   clip_grad: 1.0
-  train_samples: 1478125
-  eval_iters: 0
-  eval_interval: 2000000
+  # 为了快速验证训练demo，此处使用较小数值，实际训练时注意修改 
+  train_iters: 1000
+  eval_iters: 10
+  eval_interval: 100
   micro_batch_size: 1
-  global_batch_size: 512
+  global_batch_size: 32
+
   finetune: true
   transformer_impl: transformer_engine
   seed: 42
@@ -67,15 +69,16 @@ model:
     lr_scheduler:
       lr: 1e-5
       min_lr: 0
-      lr_warmup_samples: 21120
+      # lr_warmup_samples: 21120
+      lr_warmup_iters: 100 # 添加这一行参数，符合公式 lr_warmup_iters = lr_warmup_samples / global_batch_size。但是系统有断言语句，此处需要小于train_iters，所以这里设置一个快速测试用的值100
       lr_decay_style: cosine
 
 data:
-  data_path: ${data_path:??}
+  data_path: ../data/pile_wikipedia_demo/pile_wikipedia_demo
   split: 1
   apply_sft_dataset_separated_loss_mask_if_existed: true
   tokenizer:
     legacy_tokenizer: true
-    tokenizer_type: HFTokenizerFS
-    tokenizer_path: ${HF_model_path:??}
-    vocab_size: 151665
+    tokenizer_type: Qwen2TokenizerFS
+    tokenizer_path: ../models/Qwen2.5-1.5B
+    vocab_size: 151936

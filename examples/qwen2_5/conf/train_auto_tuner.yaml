@@ -1,0 +1,86 @@
+defaults:
+  - train: 1_5b
+  - _self_
+
+experiment:
+  exp_name: qwen2_5_1_5b_auto_tune_l20
+  exp_dir: ./outputs/qwen25_15b_autotuner_baseline_l20
+  task:
+    type: train
+    backend: megatron
+    entrypoint: ./flagscale/train/train_gpt.py
+  cmds:
+    before_start: |
+      source /usr/local/miniconda/etc/profile.d/conda.sh
+      conda activate flagscale-train
+  runner:
+    backend: torchrun
+    nnodes: 1
+    nproc_per_node: 2
+  envs:
+    CUDA_VISIBLE_DEVICES: "0,1"
+    CUDA_DEVICE_MAX_CONNECTIONS: 1
+    NCCL_SOCKET_IFNAME: lo
+    NCCL_IB_DISABLE: 1
+    NCCL_IB_CUDA_SUPPORT: 1
+    NCCL_IB_GID_INDEX: 0
+    NCCL_DEBUG: INFO
+    OMP_NUM_THREADS: 4
+    GLOO_SOCKET_IFNAME: lo
+    NCCL_IB_HCA: mlx5_2,mlx5_5
+    WANDB_MODE: offline
+  auto_tuner:
+    space:
+      # Homogeneous train autotuner supports these built-in strategy dims:
+      # dp, distopt, tp, sp, pp, vpp, recompute family, mbs, cp, ep.
+      # This baseline only expands the stage-1 dimensions we want to compare on 2xL20.
+      # Official templates also use "auto". Here "auto" means Searcher fills the default
+      # candidate domain for that dimension, then prunes invalid combinations by model,
+      # divisibility, and topology rules. It is not an adaptive search policy by itself.
+      # recompute_method / recompute_granularity / recompute_num_layers are not written
+      # here because use_recompute is fixed to false in this baseline.
+      # Future extended/full sweep reminder:
+      # micro_batch_size does not have to stay at [1, 2]; it can be widened or switched
+      # to auto.
+      # recompute family can also be switched on later, for example:
+      #   micro_batch_size: auto
+      #   use_recompute: auto
+      #   recompute_method: auto
+      #   recompute_granularity: auto
+      #   recompute_num_layers: auto
+      data_parallel_size: [1, 2]
+      use_distributed_optimizer: [true, false]
+      tensor_model_parallel_size: [1, 2]
+      sequence_parallel: [true, false]
+      pipeline_model_parallel_size: [1, 2]
+      # VPP = virtual pipeline parallel.
+      # 0 means disabled. A positive integer means "layers per virtual pipeline stage".
+      # This only takes effect when PP > 1 and the layer split is divisible.
+      # We keep [0] in the baseline to avoid adding interleaved-pipeline scheduling effects.
+      num_layers_per_virtual_pipeline_stage: [0]
+      # CP/EP stay at 1 in this local baseline so we isolate DP/TP/PP/mbs/distopt effects.
+      context_parallel_size: [1]
+      expert_model_parallel_size: [1]
+      micro_batch_size: [1, 2]
+      use_recompute: [false]
+      # recompute_method: auto
+      # recompute_granularity: auto
+      # recompute_num_layers: auto
+    control:
+      run_best: false
+      max_time_per_task: 240
+      train_iters: 3
+    memory_model:
+      model_name: default
+      gpu_memory: 46000
+      gpu_utilization: [0.1, 1.0]
+
+train:
+  model:
+    finetune: false
+
+action: auto_tune
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra
