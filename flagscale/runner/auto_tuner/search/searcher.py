@@ -102,6 +102,7 @@ class Searcher:
         # Build search space and set value of each dim
         self.logger = logging.getLogger("FlagScale-AutoTuner")
         self.config = config
+        self._normalize_runtime_defaults(self.config)
 
         # Build search space
         start_time = time.time()
@@ -145,6 +146,17 @@ class Searcher:
 
         # Build search algorithm to explore strategies
         self.algo = self.build_algo(self.strategies, self.config)
+
+    def _normalize_runtime_defaults(self, config):
+        auto_tuner = config.experiment.auto_tuner
+        runner = config.experiment.runner
+
+        if "nnodes" not in auto_tuner:
+            auto_tuner.nnodes = runner.nnodes
+        if "nproc_per_node" not in auto_tuner:
+            auto_tuner.nproc_per_node = runner.nproc_per_node
+        if "cards" not in auto_tuner:
+            auto_tuner.cards = auto_tuner.nnodes * auto_tuner.nproc_per_node
 
     def _sort(self, key, dim, priority=None):
         """Sort the dim according to priority."""

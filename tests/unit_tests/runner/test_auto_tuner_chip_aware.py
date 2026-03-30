@@ -96,6 +96,7 @@ def _make_config(
     *,
     nnodes=1,
     nproc_per_node=2,
+    include_auto_tuner_runtime=True,
     space_overrides=None,
     algo_overrides=None,
     chip_profile=None,
@@ -105,13 +106,18 @@ def _make_config(
         space.update(space_overrides)
 
     auto_tuner = {
-        "cards": nnodes * nproc_per_node,
-        "nnodes": nnodes,
-        "nproc_per_node": nproc_per_node,
         "algo": {"name": "grid", **(algo_overrides or {})},
         "platform": {},
         "space": space,
     }
+    if include_auto_tuner_runtime:
+        auto_tuner.update(
+            {
+                "cards": nnodes * nproc_per_node,
+                "nnodes": nnodes,
+                "nproc_per_node": nproc_per_node,
+            }
+        )
     if chip_profile is not None:
         auto_tuner["chip_profile"] = {"profile": chip_profile}
 
@@ -257,6 +263,23 @@ def test_pruner_sets_specific_reason_for_history_prunes(tmp_path):
 
     assert pruned is True
     assert strategy["pruned_reason"] == "history.prune_by_micro_batch_size"
+
+
+def test_searcher_derives_runtime_defaults_from_runner_for_direct_construction(tmp_path):
+    config = _make_config(
+        tmp_path,
+        include_auto_tuner_runtime=False,
+        chip_profile=_make_chip_profile(),
+        algo_overrides={"chip_aware_scoring": True},
+    )
+
+    searcher = Searcher(config)
+
+    assert config.experiment.auto_tuner.nnodes == 1
+    assert config.experiment.auto_tuner.nproc_per_node == 2
+    assert config.experiment.auto_tuner.cards == 2
+    assert searcher.strategies
+    assert any("chip_score" in strategy for strategy in searcher.strategies)
 
 
 def test_autotuner_summary_log_reports_chip_prune_count(monkeypatch, tmp_path):
