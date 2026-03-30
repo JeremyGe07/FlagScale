@@ -2,6 +2,7 @@ import pytest
 
 from omegaconf import OmegaConf
 
+from flagscale.runner.auto_tuner.prune.chip import prune_by_chip_profile
 from flagscale.runner.auto_tuner.prune.pruner import Pruner
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.searcher import Searcher
@@ -230,6 +231,32 @@ def test_pruner_sets_reason_for_memory_model_prunes(tmp_path):
 
     assert pruned is True
     assert strategy["pruned_reason"] == "memory_model.upper_bound"
+
+
+def test_prune_by_chip_profile_reports_topology_reason(tmp_path):
+    config = _make_config(
+        tmp_path,
+        nnodes=2,
+        nproc_per_node=1,
+        chip_profile=_make_chip_profile(max_nodes=1, devices_per_node=1),
+    )
+
+    pruned, reason = prune_by_chip_profile(config, _make_prune_strategy())
+
+    assert pruned is True
+    assert reason == "chip_profile.topology"
+
+
+def test_pruner_sets_specific_reason_for_history_prunes(tmp_path):
+    config = _make_config(tmp_path, chip_profile=_make_chip_profile())
+    pruner = Pruner(config)
+    history = [_make_prune_strategy(micro_batch_size=2, performance=123.0, max_mem=None)]
+    strategy = _make_prune_strategy(micro_batch_size=1)
+
+    pruned = pruner.prune(strategy, history)
+
+    assert pruned is True
+    assert strategy["pruned_reason"] == "history.prune_by_micro_batch_size"
 
 
 def test_autotuner_summary_log_reports_chip_prune_count(monkeypatch, tmp_path):

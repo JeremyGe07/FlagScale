@@ -1,4 +1,5 @@
 import logging
+from functools import wraps
 
 from flagscale.runner.auto_tuner.utils import beside, compare_by_recompute
 
@@ -7,6 +8,7 @@ logger = logging.getLogger("FlagScale-AutoTuner")
 
 
 def register(func):
+    @wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
 
