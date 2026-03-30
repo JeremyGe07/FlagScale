@@ -2,8 +2,10 @@ import pytest
 
 from omegaconf import OmegaConf
 
+from flagscale.runner.auto_tuner.prune.pruner import Pruner
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.searcher import Searcher
+from flagscale.runner.auto_tuner.tuner import AutoTuner
 
 
 DEFAULT_MODEL = {
@@ -31,9 +33,23 @@ DEFAULT_SPACE = {
 }
 
 CHIP_PROFILE = {
+    "identity": {
+        "name": "test_chip",
+        "vendor": "test_vendor",
+        "chip_class": "gpu",
+    },
+    "memory": {
+        "total_memory_mb": 46000,
+        "bandwidth_gbps": 864,
+    },
     "compute": {
         "bf16_tflops": 100,
         "attention_tflops": 100,
+    },
+    "kernel_support": {
+        "transformer_engine": True,
+        "flash_attention": True,
+        "fused_rmsnorm": True,
     },
     "interconnect": {
         "intra_node": {
@@ -140,6 +156,113 @@ def _drain_labels(algo):
         if strategy is None:
             return labels
         labels.append(strategy["label"])
+
+
+def _make_prune_strategy(**overrides):
+    strategy = {
+        "data_parallel_size": 1,
+        "use_distributed_optimizer": False,
+        "tensor_model_parallel_size": 1,
+        "sequence_parallel": False,
+        "pipeline_model_parallel_size": 1,
+        "num_layers_per_virtual_pipeline_stage": 0,
+        "use_recompute": False,
+        "recompute_method": "uniform",
+        "recompute_granularity": "full",
+        "recompute_num_layers": 1,
+        "micro_batch_size": 1,
+        "context_parallel_size": 1,
+        "expert_model_parallel_size": 1,
+    }
+    strategy.update(overrides)
+    return strategy
+
+
+def test_pruner_marks_strategy_pruned_by_chip_profile(tmp_path):
+    config = _make_config(
+        tmp_path,
+        chip_profile=_make_chip_profile(disabled_dims={"context_parallel_size": [1]}),
+    )
+    strategy = _make_prune_strategy()
+
+    pruned = Pruner(config).prune(strategy, [])
+
+    assert pruned is True
+    assert strategy["pruned"] is True
+    assert strategy["performance"] is None
+    assert strategy["pruned_reason"] == "chip_profile.disabled_dims"
+
+
+def test_pruner_counts_chip_profile_prunes_separately(tmp_path):
+    config = _make_config(
+        tmp_path,
+        chip_profile=_make_chip_profile(disabled_dims={"context_parallel_size": [1]}),
+    )
+    strategy = _make_prune_strategy()
+    pruner = Pruner(config)
+
+    pruner.prune(strategy, [])
+
+    assert pruner.pruned_by_chip_profile == 1
+
+
+def test_autotuner_summary_log_reports_chip_prune_count(monkeypatch, tmp_path):
+    class DummySearcher:
+        def __init__(self, config):
+            self.strategies = [{"label": "first", "memory_model": 10}]
+            self.algo = GridAlgo(self.strategies, config)
+
+        def search(self):
+            return self.algo.search()
+
+        def has_done(self):
+            return self.algo.has_done()
+
+    class DummyPruner:
+        def __init__(self, config):
+            self.pruned_count = 0
+            self.pruned_by_memory_model = 2
+            self.pruned_by_chip_profile = 1
+
+        def prune(self, strategy, history):
+            history.append(strategy)
+            return False
+
+    class DummyGenerator:
+        def __init__(self, config):
+            self.config = config
+
+        def gen(self, strategy):
+            return {"strategy": strategy}
+
+    class DummyRecorder:
+        def __init__(self, config):
+            self.config = config
+
+        def read(self):
+            return []
+
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Searcher", DummySearcher)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Pruner", DummyPruner)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Generator", DummyGenerator)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Recorder", DummyRecorder)
+    monkeypatch.setattr(
+        "flagscale.runner.auto_tuner.tuner.AutoTuner.find_pruned_num_value",
+        lambda self, path: "3",
+    )
+    monkeypatch.setattr(
+        "flagscale.runner.auto_tuner.tuner.AutoTuner.find_search_num_value",
+        lambda self, path: "0",
+    )
+
+    config = _make_config(tmp_path, chip_profile=_make_chip_profile())
+    config.experiment.auto_tuner.memory_model = {"gpu_memory": 80}
+
+    tuner = AutoTuner(config)
+    tuner.gen()
+
+    log_text = (tmp_path / "auto_tuner" / "tuner.log").read_text(encoding="utf-8")
+    assert "Pruned 3 strategy, 2 by memory model, 1 by chip profile." in log_text
 
 
 def test_searcher_applies_chip_profile_tensor_parallel_limit(tmp_path):

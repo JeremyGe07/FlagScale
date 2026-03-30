@@ -74,6 +74,8 @@ class AutoTuner:
 
         # Set tuner configs
         # The interval of task monitoring
+        if "algo" not in self.config.experiment.auto_tuner:
+            self.config.experiment.auto_tuner.algo = {}
         if "control" not in self.config.experiment.auto_tuner:
             self.config.experiment.auto_tuner.control = {}
         self.interval = self.config.experiment.auto_tuner.control.get("interval", 10)
@@ -286,9 +288,19 @@ class AutoTuner:
             pruned_by_memory_model = (
                 self.pruner.pruned_by_memory_model if self.pruner is not None else 0
             )
-            if "memory_model" in self.config.experiment.auto_tuner:
+            is_homogeneous = not self.config.train.system.get("hetero", {}).get(
+                "enable_hetero", False
+            )
+            pruned_by_chip_profile = (
+                getattr(self.pruner, "pruned_by_chip_profile", 0) if self.pruner is not None else 0
+            )
+            if is_homogeneous and "memory_model" in self.config.experiment.auto_tuner:
                 self.logger.info(
-                    f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy, {pruned_by_memory_model} by memory model."
+                    f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy, {pruned_by_memory_model} by memory model, {pruned_by_chip_profile} by chip profile."
+                )
+            elif is_homogeneous:
+                self.logger.info(
+                    f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy, {pruned_by_chip_profile} by chip profile."
                 )
             else:
                 self.logger.info(
