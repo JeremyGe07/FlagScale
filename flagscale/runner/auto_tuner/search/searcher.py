@@ -8,8 +8,14 @@ from functools import reduce
 
 from omegaconf import OmegaConf
 
+from flagscale.runner.auto_tuner.chip_profile import get_attached_chip_profile
 from flagscale.runner.auto_tuner.memory_model import default_model
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
+from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
+    apply_dim_limits,
+    is_strategy_disabled_by_chip_profile,
+    validate_runtime_topology,
+)
 from flagscale.runner.auto_tuner.utils import divisible
 
 BUILT_IN_STRATEGY_DIMS = [
@@ -179,6 +185,7 @@ class Searcher:
         priority = config.experiment.auto_tuner.algo.get("priority", None)
         if config.experiment.auto_tuner.platform.get("airs_switch", False):
             priority = "memory"
+        profile = get_attached_chip_profile(config)
 
         # Set data parallel degree
         space["data_parallel_size"] = (
@@ -187,7 +194,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.data_parallel_size == "auto"
             else config.experiment.auto_tuner.space.data_parallel_size
         )
-        self._sort("data_parallel_size", space["data_parallel_size"], priority)
 
         # Set distributed optimizer
         space["use_distributed_optimizer"] = (
@@ -196,7 +202,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.use_distributed_optimizer == "auto"
             else config.experiment.auto_tuner.space.use_distributed_optimizer
         )
-        self._sort("use_distributed_optimizer", space["use_distributed_optimizer"], priority)
 
         # Set tensor parallel degree
         space["tensor_model_parallel_size"] = (
@@ -205,7 +210,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.tensor_model_parallel_size == "auto"
             else config.experiment.auto_tuner.space.tensor_model_parallel_size
         )
-        self._sort("tensor_model_parallel_size", space["tensor_model_parallel_size"], priority)
 
         # Set sequence parallel
         space["sequence_parallel"] = (
@@ -214,7 +218,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.sequence_parallel == "auto"
             else config.experiment.auto_tuner.space.sequence_parallel
         )
-        self._sort("sequence_parallel", space["sequence_parallel"], priority)
 
         # Set pipeline parallel degree
         space["pipeline_model_parallel_size"] = (
@@ -223,7 +226,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.pipeline_model_parallel_size == "auto"
             else config.experiment.auto_tuner.space.pipeline_model_parallel_size
         )
-        self._sort("pipeline_model_parallel_size", space["pipeline_model_parallel_size"], priority)
 
         # Set virtual pipeline parallel degree
         space["num_layers_per_virtual_pipeline_stage"] = (
@@ -231,11 +233,6 @@ class Searcher:
             if "num_layers_per_virtual_pipeline_stage" not in config.experiment.auto_tuner.space
             or config.experiment.auto_tuner.space.num_layers_per_virtual_pipeline_stage == "auto"
             else config.experiment.auto_tuner.space.num_layers_per_virtual_pipeline_stage
-        )
-        self._sort(
-            "num_layers_per_virtual_pipeline_stage",
-            space["num_layers_per_virtual_pipeline_stage"],
-            priority,
         )
 
         # Set use recompute
@@ -245,7 +242,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.use_recompute == "auto"
             else config.experiment.auto_tuner.space.use_recompute
         )
-        self._sort("use_recompute", space["use_recompute"], priority)
 
         # Set recompute method
         space["recompute_method"] = (
@@ -254,7 +250,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.recompute_method == "auto"
             else config.experiment.auto_tuner.space.recompute_method
         )
-        self._sort("recompute_method", space["recompute_method"], priority)
 
         # Set recompute granularity
         space["recompute_granularity"] = (
@@ -263,7 +258,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.recompute_granularity == "auto"
             else config.experiment.auto_tuner.space.recompute_granularity
         )
-        self._sort("recompute_granularity", space["recompute_granularity"], priority)
 
         # Set recompute num layers
         space["recompute_num_layers"] = (
@@ -272,7 +266,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.recompute_num_layers == "auto"
             else config.experiment.auto_tuner.space.recompute_num_layers
         )
-        self._sort("recompute_num_layers", space["recompute_num_layers"], priority)
 
         # Set micro batch size
         space["micro_batch_size"] = (
@@ -281,7 +274,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.micro_batch_size == "auto"
             else config.experiment.auto_tuner.space.micro_batch_size
         )
-        self._sort("micro_batch_size", space["micro_batch_size"], priority)
 
         # Set context parallel degree
         space["context_parallel_size"] = (
@@ -290,7 +282,6 @@ class Searcher:
             or config.experiment.auto_tuner.space.context_parallel_size == "auto"
             else config.experiment.auto_tuner.space.context_parallel_size
         )
-        self._sort("context_parallel_size", space["context_parallel_size"], priority)
 
         # Set expert parallel degree
         if not hasattr(config.train.model, "num_experts"):
@@ -303,7 +294,9 @@ class Searcher:
                 else config.experiment.auto_tuner.space.expert_model_parallel_size
             )
 
-        self._sort("expert_model_parallel_size", space["expert_model_parallel_size"], priority)
+        validate_runtime_topology(config, profile)
+        space = apply_dim_limits(space, profile)
+        self._sort_space(space, priority)
 
         return space
 
@@ -314,8 +307,12 @@ class Searcher:
             parallelism_part, space, config
         )
         recompute_part = self._product_recompute_dims(micro_batch_size_vpp_part, space, config)
-
-        return recompute_part
+        profile = get_attached_chip_profile(config)
+        return [
+            strategy
+            for strategy in recompute_part
+            if not is_strategy_disabled_by_chip_profile(strategy, profile)
+        ]
 
     def build_algo(self, strategies, config):
         name = self.config.experiment.auto_tuner.algo.name
@@ -592,6 +589,10 @@ class Searcher:
             unique_result.add(sorted_items)
             copied_dim = copy.deepcopy(product_dim)
             result.append(copied_dim)
+
+    def _sort_space(self, space, priority):
+        for key, dim in space.items():
+            self._sort(key, dim, priority)
 
     def search(self):
         """Search once and return one strategy."""

@@ -62,6 +62,17 @@ def attach_chip_profile(config):
     return chip_profile_cfg.profile
 
 
+def get_attached_chip_profile(config):
+    auto_tuner_cfg = config.experiment.get("auto_tuner", None)
+    if auto_tuner_cfg is None or "chip_profile" not in auto_tuner_cfg:
+        return None
+
+    chip_profile_cfg = auto_tuner_cfg.chip_profile
+    if "profile" not in chip_profile_cfg:
+        return None
+    return chip_profile_cfg.profile
+
+
 def _resolve_profile_path(profile_path):
     path = Path(str(profile_path)).expanduser()
     candidates = [path] if path.is_absolute() else [Path.cwd() / path, REPO_ROOT / path]
