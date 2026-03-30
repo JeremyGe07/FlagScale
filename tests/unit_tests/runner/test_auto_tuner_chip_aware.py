@@ -195,6 +195,17 @@ def test_searcher_rejects_invalid_disabled_dim_name(tmp_path):
         Searcher(config)
 
 
+def test_searcher_without_chip_profile_allows_natural_zero_strategies(tmp_path):
+    config = _make_config(
+        tmp_path,
+        space_overrides={"tensor_model_parallel_size": [3]},
+    )
+
+    searcher = Searcher(config)
+
+    assert searcher.strategies == []
+
+
 def test_grid_algo_uses_chip_score_order_when_chip_aware_scoring_enabled(tmp_path):
     config = _make_config(
         tmp_path,

@@ -313,7 +313,7 @@ class Searcher:
             for strategy in recompute_part
             if not is_strategy_disabled_by_chip_profile(strategy, profile)
         ]
-        if not strategies:
+        if profile is not None and not strategies:
             raise ValueError("Chip profile hard limits produced zero strategies after final filtering.")
         return strategies
 
