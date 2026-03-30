@@ -206,6 +206,18 @@ def test_searcher_without_chip_profile_allows_natural_zero_strategies(tmp_path):
     assert searcher.strategies == []
 
 
+def test_searcher_with_chip_profile_allows_natural_zero_strategies(tmp_path):
+    config = _make_config(
+        tmp_path,
+        space_overrides={"micro_batch_size": [3]},
+        chip_profile=_make_chip_profile(),
+    )
+
+    searcher = Searcher(config)
+
+    assert searcher.strategies == []
+
+
 def test_grid_algo_uses_chip_score_order_when_chip_aware_scoring_enabled(tmp_path):
     config = _make_config(
         tmp_path,
