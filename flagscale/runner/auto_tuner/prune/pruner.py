@@ -22,20 +22,23 @@ class Pruner:
         pruned_by_chip, reason = prune_by_chip_profile(self.config, strategy, history)
         if pruned_by_chip:
             self.pruned_by_chip_profile += 1
-            self._mark_pruned(strategy, reason)
+            self._mark_chip_pruned(strategy, reason)
             not_run = True
         elif "memory_model" in self.config.experiment.auto_tuner:
             if prune_by_memory_model(self.config, strategy, history):
                 not_run = True
                 self.pruned_by_memory_model += 1
+                self._mark_reason(strategy, "memory_model.upper_bound")
             elif prune_by_memory_model_util(self.config, strategy, history):
                 not_run = True
                 self.pruned_by_memory_model += 1
+                self._mark_reason(strategy, "memory_model.utilization")
 
         if not not_run:
             for func in _HISTORY_BASED_PRUNE_FUNC:
                 if func(self.config, strategy, history):
                     not_run = True
+                    self._mark_reason(strategy, f"history.{func.__name__}")
                     break
 
         history.append(strategy)
@@ -43,7 +46,11 @@ class Pruner:
             self.pruned_count += 1
         return not_run
 
-    def _mark_pruned(self, strategy, reason):
+    def _mark_chip_pruned(self, strategy, reason):
         strategy["pruned"] = True
+        strategy["max_mem"] = strategy.get("max_mem", None)
         strategy["performance"] = None
+        strategy["pruned_reason"] = reason
+
+    def _mark_reason(self, strategy, reason):
         strategy["pruned_reason"] = reason

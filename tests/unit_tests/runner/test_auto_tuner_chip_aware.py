@@ -206,6 +206,32 @@ def test_pruner_counts_chip_profile_prunes_separately(tmp_path):
     assert pruner.pruned_by_chip_profile == 1
 
 
+def test_pruner_chip_pruned_history_item_has_safe_max_mem_shape(tmp_path):
+    config = _make_config(
+        tmp_path,
+        chip_profile=_make_chip_profile(disabled_dims={"use_distributed_optimizer": [True]}),
+    )
+    pruner = Pruner(config)
+    history = []
+    chip_pruned = _make_prune_strategy(use_distributed_optimizer=True)
+    followup = _make_prune_strategy(use_distributed_optimizer=False)
+
+    assert pruner.prune(chip_pruned, history) is True
+    assert chip_pruned["max_mem"] is None
+    assert pruner.prune(followup, history) is False
+
+
+def test_pruner_sets_reason_for_memory_model_prunes(tmp_path):
+    config = _make_config(tmp_path, chip_profile=_make_chip_profile())
+    config.experiment.auto_tuner.memory_model = {"gpu_memory": 80}
+    strategy = _make_prune_strategy(memory_model=81)
+
+    pruned = Pruner(config).prune(strategy, [])
+
+    assert pruned is True
+    assert strategy["pruned_reason"] == "memory_model.upper_bound"
+
+
 def test_autotuner_summary_log_reports_chip_prune_count(monkeypatch, tmp_path):
     class DummySearcher:
         def __init__(self, config):
