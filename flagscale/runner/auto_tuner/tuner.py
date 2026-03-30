@@ -75,7 +75,7 @@ class AutoTuner:
         # Set tuner configs
         # The interval of task monitoring
         if "algo" not in self.config.experiment.auto_tuner:
-            self.config.experiment.auto_tuner.algo = {}
+            self.config.experiment.auto_tuner.algo = {"name": "grid", "priority": None}
         if "control" not in self.config.experiment.auto_tuner:
             self.config.experiment.auto_tuner.control = {}
         self.interval = self.config.experiment.auto_tuner.control.get("interval", 10)
