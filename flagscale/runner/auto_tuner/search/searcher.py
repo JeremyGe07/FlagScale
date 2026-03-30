@@ -308,11 +308,14 @@ class Searcher:
         )
         recompute_part = self._product_recompute_dims(micro_batch_size_vpp_part, space, config)
         profile = get_attached_chip_profile(config)
-        return [
+        strategies = [
             strategy
             for strategy in recompute_part
             if not is_strategy_disabled_by_chip_profile(strategy, profile)
         ]
+        if not strategies:
+            raise ValueError("Chip profile hard limits produced zero strategies after final filtering.")
+        return strategies
 
     def build_algo(self, strategies, config):
         name = self.config.experiment.auto_tuner.algo.name

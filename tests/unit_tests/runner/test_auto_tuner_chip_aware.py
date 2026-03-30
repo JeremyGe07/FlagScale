@@ -164,6 +164,37 @@ def test_searcher_rejects_runtime_topology_outside_chip_profile(tmp_path):
         Searcher(config)
 
 
+def test_searcher_fails_fast_when_chip_limits_empty_a_space_dim(tmp_path):
+    config = _make_config(
+        tmp_path,
+        chip_profile=_make_chip_profile(disabled_dims={"context_parallel_size": [1, 2]}),
+    )
+
+    with pytest.raises(ValueError, match="context_parallel_size"):
+        Searcher(config)
+
+
+def test_searcher_fails_fast_when_final_chip_filter_removes_all_strategies(tmp_path):
+    config = _make_config(
+        tmp_path,
+        space_overrides={"use_distributed_optimizer": [True, False]},
+        chip_profile=_make_chip_profile(disabled_dims={"use_distributed_optimizer": [False]}),
+    )
+
+    with pytest.raises(ValueError, match="zero strategies"):
+        Searcher(config)
+
+
+def test_searcher_rejects_invalid_disabled_dim_name(tmp_path):
+    config = _make_config(
+        tmp_path,
+        chip_profile=_make_chip_profile(disabled_dims={"invalid_dim": [1]}),
+    )
+
+    with pytest.raises(ValueError, match="invalid_dim"):
+        Searcher(config)
+
+
 def test_grid_algo_uses_chip_score_order_when_chip_aware_scoring_enabled(tmp_path):
     config = _make_config(
         tmp_path,
