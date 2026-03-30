@@ -158,6 +158,12 @@ def _make_chip_profile(
     return OmegaConf.to_container(profile, resolve=True)
 
 
+def _write_chip_profile(tmp_path, profile=None):
+    profile_path = tmp_path / "chip_profile.yaml"
+    OmegaConf.save(config=OmegaConf.create(profile or _make_chip_profile()), f=profile_path)
+    return str(profile_path)
+
+
 def _drain_labels(algo):
     labels = []
     while True:
@@ -272,9 +278,9 @@ def test_searcher_derives_runtime_defaults_from_runner_for_direct_construction(t
         tmp_path,
         include_auto_tuner_runtime=False,
         include_auto_tuner_platform=False,
-        chip_profile=_make_chip_profile(),
         algo_overrides={"chip_aware_scoring": True},
     )
+    config.experiment.auto_tuner.chip_profile = {"path": _write_chip_profile(tmp_path)}
 
     searcher = Searcher(config)
 
@@ -282,6 +288,7 @@ def test_searcher_derives_runtime_defaults_from_runner_for_direct_construction(t
     assert config.experiment.auto_tuner.nproc_per_node == 2
     assert config.experiment.auto_tuner.cards == 2
     assert OmegaConf.to_container(config.experiment.auto_tuner.platform, resolve=True) == {}
+    assert "profile" in config.experiment.auto_tuner.chip_profile
     assert searcher.strategies
     assert any("chip_score" in strategy for strategy in searcher.strategies)
 

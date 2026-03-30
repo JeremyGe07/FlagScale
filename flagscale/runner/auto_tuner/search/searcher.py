@@ -8,7 +8,7 @@ from functools import reduce
 
 from omegaconf import OmegaConf
 
-from flagscale.runner.auto_tuner.chip_profile import get_attached_chip_profile
+from flagscale.runner.auto_tuner.chip_profile import attach_chip_profile, get_attached_chip_profile
 from flagscale.runner.auto_tuner.memory_model import default_model
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
@@ -103,6 +103,7 @@ class Searcher:
         self.logger = logging.getLogger("FlagScale-AutoTuner")
         self.config = config
         self._normalize_runtime_defaults(self.config)
+        attach_chip_profile(self.config)
 
         # Build search space
         start_time = time.time()
