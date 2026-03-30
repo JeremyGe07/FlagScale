@@ -151,6 +151,8 @@ class Searcher:
         auto_tuner = config.experiment.auto_tuner
         runner = config.experiment.runner
 
+        if "platform" not in auto_tuner:
+            auto_tuner.platform = {}
         if "nnodes" not in auto_tuner:
             auto_tuner.nnodes = runner.nnodes
         if "nproc_per_node" not in auto_tuner:

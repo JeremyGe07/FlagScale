@@ -97,6 +97,7 @@ def _make_config(
     nnodes=1,
     nproc_per_node=2,
     include_auto_tuner_runtime=True,
+    include_auto_tuner_platform=True,
     space_overrides=None,
     algo_overrides=None,
     chip_profile=None,
@@ -107,9 +108,10 @@ def _make_config(
 
     auto_tuner = {
         "algo": {"name": "grid", **(algo_overrides or {})},
-        "platform": {},
         "space": space,
     }
+    if include_auto_tuner_platform:
+        auto_tuner["platform"] = {}
     if include_auto_tuner_runtime:
         auto_tuner.update(
             {
@@ -269,6 +271,7 @@ def test_searcher_derives_runtime_defaults_from_runner_for_direct_construction(t
     config = _make_config(
         tmp_path,
         include_auto_tuner_runtime=False,
+        include_auto_tuner_platform=False,
         chip_profile=_make_chip_profile(),
         algo_overrides={"chip_aware_scoring": True},
     )
@@ -278,6 +281,7 @@ def test_searcher_derives_runtime_defaults_from_runner_for_direct_construction(t
     assert config.experiment.auto_tuner.nnodes == 1
     assert config.experiment.auto_tuner.nproc_per_node == 2
     assert config.experiment.auto_tuner.cards == 2
+    assert OmegaConf.to_container(config.experiment.auto_tuner.platform, resolve=True) == {}
     assert searcher.strategies
     assert any("chip_score" in strategy for strategy in searcher.strategies)
 
