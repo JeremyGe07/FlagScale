@@ -31,6 +31,23 @@ DEFAULT_SPACE = {
 }
 
 CHIP_PROFILE = {
+    "compute": {
+        "bf16_tflops": 100,
+        "attention_tflops": 100,
+    },
+    "interconnect": {
+        "intra_node": {
+            "fabric": "pcie",
+            "p2p_bandwidth_gbps": 64,
+            "p2p_latency_us": 3,
+            "all_reduce_bandwidth_gbps": 45,
+            "all_reduce_latency_us": 8,
+        },
+        "host_device": {
+            "bandwidth_gbps": 24,
+            "latency_us": 10,
+        },
+    },
     "topology": {
         "max_nodes": 1,
         "devices_per_node": 2,
@@ -224,6 +241,24 @@ def test_searcher_with_chip_profile_allows_natural_zero_strategies(tmp_path):
     assert searcher.strategies == []
 
 
+def test_searcher_injects_chip_score_fields_when_chip_aware_scoring_enabled(tmp_path):
+    config = _make_config(
+        tmp_path,
+        chip_profile=_make_chip_profile(),
+        algo_overrides={"chip_aware_scoring": True},
+    )
+
+    searcher = Searcher(config)
+
+    assert searcher.strategies
+    strategy = searcher.strategies[0]
+    assert "chip_score" in strategy
+    assert "chip_priority" in strategy
+    assert "chip_score_reasons" in strategy
+    assert strategy["chip_priority"] == "performance"
+    assert strategy["chip_score_reasons"]
+
+
 def test_grid_algo_uses_chip_score_order_when_chip_aware_scoring_enabled(tmp_path):
     config = _make_config(
         tmp_path,
@@ -241,6 +276,23 @@ def test_grid_algo_keeps_input_order_without_chip_aware_scoring(tmp_path):
     )
 
     algo = GridAlgo(STRATEGIES, config)
+
+    assert _drain_labels(algo) == ["alpha", "beta", "gamma"]
+
+
+def test_grid_algo_keeps_plain_memory_model_order_without_chip_scores(tmp_path):
+    config = _make_config(
+        tmp_path,
+        algo_overrides={"chip_aware_scoring": True},
+    )
+    config.experiment.auto_tuner.memory_model = {"model_name": "default"}
+    strategies = [
+        {"label": "alpha", "memory_model": 10},
+        {"label": "beta", "memory_model": 20},
+        {"label": "gamma", "memory_model": 30},
+    ]
+
+    algo = GridAlgo(strategies, config)
 
     assert _drain_labels(algo) == ["alpha", "beta", "gamma"]
 

@@ -29,9 +29,10 @@ class GridAlgo(Algo):
         chip_scoring_enabled = self.config.experiment.auto_tuner.algo.get(
             "chip_aware_scoring", False
         )
-        if chip_scoring_enabled:
+        has_chip_scores = _strategies_have_chip_scores(self.strategies)
+        if chip_scoring_enabled and has_chip_scores:
             self.strategies = sorted(self.strategies, key=sort_by_chip_score, reverse=True)
-        elif "memory_model" in self.config.experiment.auto_tuner:
+        elif not chip_scoring_enabled and "memory_model" in self.config.experiment.auto_tuner:
             self.checkout(mode="memory_model")
 
     def checkout(self, mode):
@@ -67,3 +68,9 @@ def sort_by_chip_score(strategy):
     chip_score = strategy.get("chip_score", float("-inf"))
     memory_model = strategy.get("memory_model", float("-inf"))
     return (chip_score, memory_model)
+
+
+def _strategies_have_chip_scores(strategies):
+    if not strategies:
+        return False
+    return all("chip_score" in strategy for strategy in strategies)
