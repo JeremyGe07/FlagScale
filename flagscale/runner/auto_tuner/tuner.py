@@ -96,6 +96,7 @@ class AutoTuner:
 
         # Build core sub modules, such as Searcher, Pruner, Generator and Recorder
         is_hetero_enabled = self.config.train.system.get("hetero", {}).get("enable_hetero", False)
+        self._validate_mode_support(is_hetero_enabled, profile)
 
         if is_hetero_enabled:
             self.logger.info("Initializing in Heterogeneous Mode.")
@@ -168,6 +169,18 @@ class AutoTuner:
 
         # Checkout search mode on the platform
         self.has_checkout = False
+
+    def _validate_mode_support(self, is_hetero_enabled, profile):
+        if not is_hetero_enabled:
+            return
+        algo = self.config.experiment.auto_tuner.algo
+        chip_aware_requested = profile is not None or algo.get("chip_aware_scoring", False)
+        if not chip_aware_requested:
+            return
+        raise ValueError(
+            "Heterogeneous auto_tuner does not support chip-aware configuration: "
+            "remove auto_tuner.chip_profile and disable auto_tuner.algo.chip_aware_scoring."
+        )
 
     # clear break task log
     def clear_log(self, folder_path):

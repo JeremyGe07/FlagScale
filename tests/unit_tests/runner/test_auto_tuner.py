@@ -301,3 +301,101 @@ strategy_hints:
     expected = load_chip_profile(str(profile_path))
 
     assert tuner.config.experiment.auto_tuner.chip_profile.profile == expected
+
+
+def test_autotuner_rejects_hetero_mode_with_chip_aware_config(monkeypatch, tmp_path):
+    class DummyHeteroSearcher:
+        def __init__(self, config, resources):
+            self.config = config
+            self.resources = resources
+            self.algo = GridAlgo([], config)
+
+    class DummyHeteroPruner:
+        def __init__(self, config):
+            self.pruned_count = 0
+
+    class DummyHeteroGenerator:
+        def __init__(self, config):
+            self.config = config
+
+    class DummyHeteroRecorder:
+        def __init__(self, config):
+            self.config = config
+
+        def read(self):
+            return []
+
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.HeteroSearcher", DummyHeteroSearcher)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.HeteroPruner", DummyHeteroPruner)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.HeteroGenerator", DummyHeteroGenerator)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.HeteroRecorder", DummyHeteroRecorder)
+    monkeypatch.setattr(
+        "flagscale.runner.auto_tuner.tuner.parse_hostfile",
+        lambda path: {"localhost": {"slots": 2}},
+    )
+
+    profile_path = tmp_path / "nvidia_l20.yaml"
+    profile_path.write_text(
+        """
+schema_version: v1alpha1
+identity:
+  name: nvidia_l20
+  vendor: nvidia
+  chip_class: gpu
+memory:
+  total_memory_mb: 46000
+  bandwidth_gbps: 864
+compute:
+  bf16_tflops: 119.5
+  attention_tflops: 119.5
+interconnect:
+  intra_node:
+    fabric: pcie
+    p2p_bandwidth_gbps: 64
+    p2p_latency_us: 3
+    all_reduce_bandwidth_gbps: 45
+    all_reduce_latency_us: 8
+  host_device:
+    bandwidth_gbps: 24
+    latency_us: 10
+kernel_support:
+  transformer_engine: true
+  flash_attention: true
+  fused_rmsnorm: true
+topology:
+  max_nodes: 1
+  devices_per_node: 2
+  homogeneous_only: true
+strategy_hints:
+  default_search_priority: performance
+  max_tensor_model_parallel_size: 2
+  max_pipeline_model_parallel_size: 2
+  disabled_dims: {}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {
+                    "nnodes": 1,
+                    "nproc_per_node": 2,
+                    "hostfile": str(tmp_path / "hosts"),
+                },
+                "auto_tuner": {
+                    "chip_profile": {"path": str(profile_path)},
+                    "algo": {"chip_aware_scoring": True},
+                },
+            },
+            "train": {
+                "system": {
+                    "hetero": {"enable_hetero": True},
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="heterogeneous.*chip-aware|chip_profile"):
+        AutoTuner(config)

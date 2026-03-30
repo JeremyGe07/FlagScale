@@ -469,6 +469,16 @@ def test_searcher_injects_chip_score_fields_when_chip_aware_scoring_enabled(tmp_
     assert strategy["chip_score_reasons"]
 
 
+def test_searcher_rejects_chip_aware_scoring_without_chip_profile(tmp_path):
+    config = _make_config(
+        tmp_path,
+        algo_overrides={"chip_aware_scoring": True},
+    )
+
+    with pytest.raises(ValueError, match="chip_aware_scoring.*chip_profile"):
+        Searcher(config)
+
+
 def test_grid_algo_uses_chip_score_order_when_chip_aware_scoring_enabled(tmp_path):
     config = _make_config(
         tmp_path,

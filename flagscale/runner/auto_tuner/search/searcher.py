@@ -103,7 +103,8 @@ class Searcher:
         self.logger = logging.getLogger("FlagScale-AutoTuner")
         self.config = config
         self._normalize_runtime_defaults(self.config)
-        attach_chip_profile(self.config)
+        profile = attach_chip_profile(self.config)
+        self._validate_chip_aware_config(self.config, profile)
 
         # Build search space
         start_time = time.time()
@@ -147,6 +148,15 @@ class Searcher:
 
         # Build search algorithm to explore strategies
         self.algo = self.build_algo(self.strategies, self.config)
+
+    def _validate_chip_aware_config(self, config, profile):
+        if profile is not None:
+            return
+        if not config.experiment.auto_tuner.algo.get("chip_aware_scoring", False):
+            return
+        raise ValueError(
+            "auto_tuner.algo.chip_aware_scoring requires a configured auto_tuner.chip_profile."
+        )
 
     def _normalize_runtime_defaults(self, config):
         auto_tuner = config.experiment.auto_tuner
