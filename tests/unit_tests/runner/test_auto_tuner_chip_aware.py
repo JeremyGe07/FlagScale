@@ -50,6 +50,12 @@ STRATEGIES = [
     {"label": "gamma", "chip_score": 0.5},
 ]
 
+TIE_BREAKER_STRATEGIES = [
+    {"label": "alpha", "chip_score": 0.7, "memory_model": 10},
+    {"label": "beta", "chip_score": 0.7, "memory_model": 20},
+    {"label": "gamma", "chip_score": 0.4, "memory_model": 30},
+]
+
 
 def _make_config(
     tmp_path,
@@ -237,3 +243,15 @@ def test_grid_algo_keeps_input_order_without_chip_aware_scoring(tmp_path):
     algo = GridAlgo(STRATEGIES, config)
 
     assert _drain_labels(algo) == ["alpha", "beta", "gamma"]
+
+
+def test_grid_algo_uses_memory_model_as_tie_breaker_for_chip_score(tmp_path):
+    config = _make_config(
+        tmp_path,
+        algo_overrides={"chip_aware_scoring": True},
+    )
+    config.experiment.auto_tuner.memory_model = {"model_name": "default"}
+
+    algo = GridAlgo(TIE_BREAKER_STRATEGIES, config)
+
+    assert _drain_labels(algo) == ["beta", "alpha", "gamma"]

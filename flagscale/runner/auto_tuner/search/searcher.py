@@ -11,6 +11,7 @@ from omegaconf import OmegaConf
 from flagscale.runner.auto_tuner.chip_profile import get_attached_chip_profile
 from flagscale.runner.auto_tuner.memory_model import default_model
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
+from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
 from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
     apply_dim_limits,
     is_strategy_disabled_by_chip_profile,
@@ -121,6 +122,7 @@ class Searcher:
                 len(self.strategies), end_time - start_time
             )
         )
+        self._inject_chip_scores(self.strategies, self.config)
 
         if "memory_model" in self.config.experiment.auto_tuner:
             # In the future, the memory model will be loaded by yaml
@@ -323,6 +325,18 @@ class Searcher:
             return GridAlgo(strategies, self.config)
         else:
             raise NotImplementedError("Currently only grid search is supported.")
+
+    def _inject_chip_scores(self, strategies, config):
+        profile = get_attached_chip_profile(config)
+        if profile is None:
+            return
+        if not config.experiment.auto_tuner.algo.get("chip_aware_scoring", False):
+            return
+        for strategy in strategies:
+            chip_score = build_chip_score(strategy, profile)
+            strategy["chip_score"] = chip_score["score"]
+            strategy["chip_priority"] = chip_score["priority"]
+            strategy["chip_score_reasons"] = chip_score["reasons"]
 
     def _product_parallel_dims(self, space, config):
         # Avoid space explosion after product
