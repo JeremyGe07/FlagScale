@@ -34,6 +34,9 @@ experiment:
     # Keep disabled in the current bounded baseline so today's results stay comparable.
     # chip_profile:
     #   path: hardware/chip_profiles/nvidia_l20.yaml
+    # algo:
+    #   chip_aware_scoring: true  # enable chip-aware ranking here.
+    # When this stays false or omitted, baseline search behavior remains unchanged.
     space:
       # Homogeneous train autotuner supports these built-in strategy dims:
       # dp, distopt, tp, sp, pp, vpp, recompute family, mbs, cp, ep.
