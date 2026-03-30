@@ -1,0 +1,47 @@
+# Placeholder local chip profile for schema validation on the 2xL20 workstation.
+# This file is only used to verify the schema and integration path. It is not a
+# claim about domestic accelerators or a source of final performance conclusions.
+
+schema_version: v1alpha1
+
+identity:
+  name: nvidia_l20
+  vendor: nvidia
+  chip_class: gpu
+
+memory:
+  total_memory_mb: 46000
+  bandwidth_gbps: 864
+
+compute:
+  bf16_tflops: 119.5
+  attention_tflops: 119.5
+
+interconnect:
+  intra_node:
+    fabric: pcie
+    p2p_bandwidth_gbps: 64
+    p2p_latency_us: 3
+    all_reduce_bandwidth_gbps: 45
+    all_reduce_latency_us: 8
+  host_device:
+    bandwidth_gbps: 24
+    latency_us: 10
+
+kernel_support:
+  transformer_engine: true
+  flash_attention: true
+  fused_rmsnorm: true
+
+topology:
+  max_nodes: 1
+  devices_per_node: 2
+  homogeneous_only: true
+
+strategy_hints:
+  default_search_priority: performance
+  max_tensor_model_parallel_size: 2
+  max_pipeline_model_parallel_size: 2
+  disabled_dims:
+    context_parallel_size: [2, 4]
+    expert_model_parallel_size: [2, 4]

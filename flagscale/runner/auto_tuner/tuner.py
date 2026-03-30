@@ -10,6 +10,7 @@ import time
 
 from omegaconf import DictConfig, OmegaConf
 
+from flagscale.runner.auto_tuner.chip_profile import attach_chip_profile
 from flagscale.runner.auto_tuner.generate import Generator, ServeGenerator
 from flagscale.runner.auto_tuner.hetero import (
     HeteroGenerator,
@@ -54,6 +55,14 @@ class AutoTuner:
         # Set config of auto tuner
         if "auto_tuner" not in self.config.experiment:
             self.config.experiment.auto_tuner = {}
+        if "auto_tuner" not in self.orig_config.experiment:
+            self.orig_config.experiment.auto_tuner = {}
+
+        profile = attach_chip_profile(self.config)
+        attach_chip_profile(self.orig_config)
+        if profile is not None:
+            profile_name = profile["identity"]["name"]
+            self.logger.info(f"Loaded chip profile: {profile_name}")
 
         # Add nodes, nproc_per_node, cards to build search space or prune
         assert "experiment" in config, "experiment is not in yaml file."

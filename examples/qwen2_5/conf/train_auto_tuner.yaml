@@ -30,6 +30,10 @@ experiment:
     NCCL_IB_HCA: mlx5_2,mlx5_5
     WANDB_MODE: offline
   auto_tuner:
+    # Optional chip profile entry point for future pruning / ranking / topology work.
+    # Keep disabled in the current bounded baseline so today's results stay comparable.
+    # chip_profile:
+    #   path: hardware/chip_profiles/nvidia_l20.yaml
     space:
       # Homogeneous train autotuner supports these built-in strategy dims:
       # dp, distopt, tp, sp, pp, vpp, recompute family, mbs, cp, ep.

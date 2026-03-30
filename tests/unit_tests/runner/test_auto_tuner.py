@@ -1,3 +1,5 @@
+import pytest
+
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.generate import Generator
@@ -159,3 +161,143 @@ def test_autotuner_fresh_run_starts_from_first_strategy(monkeypatch, tmp_path):
     tuner.gen()
 
     assert tuner.cur_strategy["label"] == "first"
+
+
+def test_load_chip_profile_normalizes_a_minimal_profile(tmp_path):
+    from flagscale.runner.auto_tuner.chip_profile import load_chip_profile
+
+    profile_path = tmp_path / "nvidia_l20.yaml"
+    profile_path.write_text(
+        """
+schema_version: v1alpha1
+identity:
+  name: nvidia_l20
+  vendor: nvidia
+  chip_class: gpu
+memory:
+  total_memory_mb: 46000
+  bandwidth_gbps: 864
+compute:
+  bf16_tflops: 119.5
+  attention_tflops: 119.5
+interconnect:
+  intra_node:
+    fabric: pcie
+    p2p_bandwidth_gbps: 64
+    p2p_latency_us: 3
+    all_reduce_bandwidth_gbps: 45
+    all_reduce_latency_us: 8
+  host_device:
+    bandwidth_gbps: 24
+    latency_us: 10
+kernel_support:
+  transformer_engine: true
+  flash_attention: true
+  fused_rmsnorm: true
+topology:
+  max_nodes: 1
+  devices_per_node: 2
+  homogeneous_only: true
+strategy_hints:
+  default_search_priority: performance
+  max_tensor_model_parallel_size: 2
+  max_pipeline_model_parallel_size: 2
+  disabled_dims:
+    context_parallel_size: [2, 4]
+    expert_model_parallel_size: [2, 4]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_chip_profile(str(profile_path))
+
+    assert profile["identity"]["name"] == "nvidia_l20"
+    assert profile["memory"]["total_memory_mb"] == 46000
+    assert profile["strategy_hints"]["max_tensor_model_parallel_size"] == 2
+
+
+def test_load_chip_profile_rejects_missing_required_sections(tmp_path):
+    from flagscale.runner.auto_tuner.chip_profile import load_chip_profile
+
+    profile_path = tmp_path / "broken.yaml"
+    profile_path.write_text(
+        """
+schema_version: v1alpha1
+identity:
+  name: broken
+  vendor: nvidia
+  chip_class: gpu
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Missing required chip profile sections"):
+        load_chip_profile(str(profile_path))
+
+
+def test_autotuner_loads_chip_profile_into_runtime_config(monkeypatch, tmp_path):
+    from flagscale.runner.auto_tuner.chip_profile import load_chip_profile
+
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Searcher", _DummySearcher)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Pruner", _DummyPruner)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Generator", _DummyGenerator)
+    monkeypatch.setattr("flagscale.runner.auto_tuner.tuner.Recorder", _DummyRecorder)
+
+    profile_path = tmp_path / "nvidia_l20.yaml"
+    profile_path.write_text(
+        """
+schema_version: v1alpha1
+identity:
+  name: nvidia_l20
+  vendor: nvidia
+  chip_class: gpu
+memory:
+  total_memory_mb: 46000
+  bandwidth_gbps: 864
+compute:
+  bf16_tflops: 119.5
+  attention_tflops: 119.5
+interconnect:
+  intra_node:
+    fabric: pcie
+    p2p_bandwidth_gbps: 64
+    p2p_latency_us: 3
+    all_reduce_bandwidth_gbps: 45
+    all_reduce_latency_us: 8
+  host_device:
+    bandwidth_gbps: 24
+    latency_us: 10
+kernel_support:
+  transformer_engine: true
+  flash_attention: true
+  fused_rmsnorm: true
+topology:
+  max_nodes: 1
+  devices_per_node: 2
+  homogeneous_only: true
+strategy_hints:
+  default_search_priority: performance
+  max_tensor_model_parallel_size: 2
+  max_pipeline_model_parallel_size: 2
+  disabled_dims:
+    context_parallel_size: [2, 4]
+    expert_model_parallel_size: [2, 4]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {"nnodes": 1, "nproc_per_node": 2},
+                "auto_tuner": {"chip_profile": {"path": str(profile_path)}},
+            },
+            "train": {"system": {}},
+        }
+    )
+
+    tuner = AutoTuner(config)
+    expected = load_chip_profile(str(profile_path))
+
+    assert tuner.config.experiment.auto_tuner.chip_profile.profile == expected
