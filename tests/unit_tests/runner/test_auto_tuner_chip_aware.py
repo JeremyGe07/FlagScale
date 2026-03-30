@@ -1,32 +1,9 @@
-import importlib
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
 
 from omegaconf import OmegaConf
 
-ROOT = Path(__file__).resolve().parents[3]
-FLAGSCALE_ROOT = ROOT / "flagscale"
-
-
-def _import_flagscale_module(module_name):
-    package_name = "flagscale"
-    if package_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(
-            package_name,
-            FLAGSCALE_ROOT / "__init__.py",
-            submodule_search_locations=[str(FLAGSCALE_ROOT)],
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[package_name] = module
-        spec.loader.exec_module(module)
-
-    return importlib.import_module(module_name)
-
-GridAlgo = _import_flagscale_module("flagscale.runner.auto_tuner.search.algorithm").GridAlgo
-Searcher = _import_flagscale_module("flagscale.runner.auto_tuner.search.searcher").Searcher
+from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
+from flagscale.runner.auto_tuner.search.searcher import Searcher
 
 
 DEFAULT_MODEL = {
@@ -68,9 +45,9 @@ CHIP_PROFILE = {
 }
 
 STRATEGIES = [
-    {"label": "alpha", "chip_score": 0.2, "memory_model": 30},
-    {"label": "beta", "chip_score": 0.9, "memory_model": 10},
-    {"label": "gamma", "chip_score": 0.5, "memory_model": 20},
+    {"label": "alpha", "chip_score": 0.2},
+    {"label": "beta", "chip_score": 0.9},
+    {"label": "gamma", "chip_score": 0.5},
 ]
 
 
