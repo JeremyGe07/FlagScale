@@ -1,6 +1,7 @@
 import importlib
 import sys
 import types
+from types import SimpleNamespace
 
 import pytest
 from omegaconf import OmegaConf
@@ -495,7 +496,44 @@ def test_time_cost_reports_higher_pp_comm_on_weaker_fabric(tmp_path):
     )
 
 
-def test_searcher_injects_cost_fields_into_strategy(monkeypatch, tmp_path):
+def test_calculate_hetero_memory_uses_megatron_args_converter(monkeypatch, tmp_path):
+    import flagscale.runner.auto_tuner.hetero.hetero_theoretical_memory as hetero_memory_module
+    import flagscale.runner.auto_tuner.memory_model as memory_model_module
+    import flagscale.runner.auto_tuner.utils as utils_module
+
+    observed = {}
+    strategy = {"data_parallel_size": 1}
+    config = build_autotuner_config(tmp_path)
+
+    def fake_convert_config_to_megatron_args(actual_config, actual_strategy):
+        observed["config"] = actual_config
+        observed["strategy"] = actual_strategy
+        return SimpleNamespace()
+
+    def fake_hetero_report_theoretical_memory(strategy, config, base_args):
+        observed["base_args"] = base_args
+        return [2048.0]
+
+    monkeypatch.setattr(
+        utils_module,
+        "convert_config_to_megatron_args",
+        fake_convert_config_to_megatron_args,
+    )
+    monkeypatch.setattr(
+        hetero_memory_module,
+        "hetero_report_theoretical_memory",
+        fake_hetero_report_theoretical_memory,
+    )
+
+    memory_model_module = importlib.reload(memory_model_module)
+
+    assert memory_model_module.calculate_hetero_memory(strategy, config) == [2048.0]
+    assert observed["config"] is config
+    assert observed["strategy"] is strategy
+    assert observed["base_args"].global_batch_size == config.train.model.global_batch_size
+
+
+def test_searcher_only_injects_memory_cost_fields_into_strategy(monkeypatch, tmp_path):
     memory_result = {
         "memory_total_mb": FAKE_MEMORY_TOTAL_MB,
         "memory_breakdown": {"peak_mb": 234.0, "reserved_mb": 56.0},
@@ -535,8 +573,8 @@ def test_searcher_injects_cost_fields_into_strategy(monkeypatch, tmp_path):
 
     assert strategy["memory_model"] == FAKE_MEMORY_TOTAL_MB
     assert strategy["memory_breakdown"] == memory_result["memory_breakdown"]
-    assert strategy["time_cost"] == time_result["time_total_ms"]
-    assert strategy["time_breakdown"] == time_result["time_breakdown"]
+    assert "time_cost" not in strategy
+    assert "time_breakdown" not in strategy
 
 
 def test_grid_algo_can_sort_by_time_cost(tmp_path):

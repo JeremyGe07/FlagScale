@@ -19,11 +19,6 @@ from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
 )
 from flagscale.runner.auto_tuner.utils import divisible
 
-try:
-    from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
-except ImportError:
-    estimate_time_cost = None
-
 BUILT_IN_STRATEGY_DIMS = [
     "data_parallel_size",
     "use_distributed_optimizer",
@@ -153,10 +148,6 @@ class Searcher:
                     strategy["gpu_utilization"] = self.config.experiment.auto_tuner.memory_model.get(
                         "gpu_utilization", [0.2, 0.8]
                     )
-                if estimate_time_cost is not None:
-                    time_cost = estimate_time_cost(strategy, self.config)
-                    strategy["time_cost"] = time_cost["time_total_ms"]
-                    strategy["time_breakdown"] = time_cost["time_breakdown"]
                 self.logger.info(
                     "Searcher: strategy is {}, memory model is {} MB".format(
                         strategy, strategy["memory_model"]

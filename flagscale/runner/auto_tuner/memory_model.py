@@ -2,6 +2,7 @@ from flagscale.runner.auto_tuner.hetero.hetero_theoretical_memory import (
     hetero_report_theoretical_memory,
 )
 from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
+from flagscale.runner.auto_tuner.utils import convert_config_to_megatron_args
 
 
 def default_model_breakdown(strategy, config):
