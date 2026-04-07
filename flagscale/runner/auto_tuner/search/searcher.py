@@ -9,7 +9,7 @@ from functools import reduce
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.chip_profile import attach_chip_profile, get_attached_chip_profile
-from flagscale.runner.auto_tuner.memory_model import default_model
+from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
 from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
@@ -18,6 +18,11 @@ from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
     validate_runtime_topology,
 )
 from flagscale.runner.auto_tuner.utils import divisible
+
+try:
+    from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
+except ImportError:
+    estimate_time_cost = None
 
 BUILT_IN_STRATEGY_DIMS = [
     "data_parallel_size",
@@ -127,19 +132,31 @@ class Searcher:
         )
         self._inject_chip_scores(self.strategies, self.config)
 
-        if "memory_model" in self.config.experiment.auto_tuner:
+        if (
+            "memory_model" in self.config.experiment.auto_tuner
+            or get_attached_chip_profile(self.config) is not None
+        ):
             # In the future, the memory model will be loaded by yaml
-            model_name = self.config.experiment.auto_tuner.memory_model.get("model_name", "default")
+            model_name = self.config.experiment.auto_tuner.get("memory_model", {}).get(
+                "model_name", "default"
+            )
             if model_name != "default":
                 raise NotImplementedError(
                     "The memory model {} is not implemented yet.".format(model_name)
                 )
 
             for strategy in self.strategies:
-                strategy["memory_model"] = default_model(strategy, self.config)
-                strategy["gpu_utilization"] = self.config.experiment.auto_tuner.memory_model.get(
-                    "gpu_utilization", [0.2, 0.8]
-                )
+                memory_cost = estimate_memory_cost(strategy, self.config)
+                strategy["memory_model"] = memory_cost["memory_total_mb"]
+                strategy["memory_breakdown"] = memory_cost["memory_breakdown"]
+                if "memory_model" in self.config.experiment.auto_tuner:
+                    strategy["gpu_utilization"] = self.config.experiment.auto_tuner.memory_model.get(
+                        "gpu_utilization", [0.2, 0.8]
+                    )
+                if estimate_time_cost is not None:
+                    time_cost = estimate_time_cost(strategy, self.config)
+                    strategy["time_cost"] = time_cost["time_total_ms"]
+                    strategy["time_breakdown"] = time_cost["time_breakdown"]
                 self.logger.info(
                     "Searcher: strategy is {}, memory model is {} MB".format(
                         strategy, strategy["memory_model"]

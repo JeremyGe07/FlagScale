@@ -55,6 +55,7 @@ def build_autotuner_config(tmp_path, chip_profile=None, algo=None, include_memor
                     "num_attention_heads": 12,
                     "global_batch_size": 32,
                     "seq_length": 2048,
+                    "padded_vocab_size": 32000,
                 },
             },
         }

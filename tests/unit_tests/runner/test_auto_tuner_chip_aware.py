@@ -15,6 +15,7 @@ DEFAULT_MODEL = {
     "hidden_size": 2,
     "num_attention_heads": 2,
     "seq_length": 2,
+    "padded_vocab_size": 16,
 }
 
 DEFAULT_SPACE = {
@@ -245,6 +246,22 @@ def test_pruner_sets_reason_for_memory_model_prunes(tmp_path):
 
     assert pruned is True
     assert strategy["pruned_reason"] == "memory_model.upper_bound"
+
+
+def test_pruner_logs_memory_breakdown_details_for_memory_model_prunes(tmp_path, caplog):
+    config = _make_config(tmp_path, chip_profile=_make_chip_profile())
+    config.experiment.auto_tuner.memory_model = {"gpu_memory": 80}
+    strategy = _make_prune_strategy(
+        memory_model=81,
+        memory_breakdown={"reserved_mb": 12.5, "peak_mb": 68.5},
+    )
+
+    with caplog.at_level("INFO", logger="FlagScale-AutoTuner"):
+        pruned = Pruner(config).prune(strategy, [])
+
+    assert pruned is True
+    assert "reserved_mb=12.5" in caplog.text
+    assert "peak_mb=68.5" in caplog.text
 
 
 def test_prune_by_chip_profile_reports_topology_reason(tmp_path):

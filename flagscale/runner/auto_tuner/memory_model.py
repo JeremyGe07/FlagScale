@@ -1,24 +1,16 @@
 from flagscale.runner.auto_tuner.hetero.hetero_theoretical_memory import (
     hetero_report_theoretical_memory,
 )
-from flagscale.runner.auto_tuner.utils import convert_config_to_megatron_args
-from flagscale.train.theoretical_memory_usage import (
-    report_theoretical_memory as homogeneous_report_theoretical_memory,
-)
+from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
+
+
+def default_model_breakdown(strategy, config):
+    return estimate_memory_cost(strategy, config)
 
 
 def default_model(strategy, config):
     """Use megatron built in memory model."""
-    from flagscale.train.theoretical_memory_usage import report_theoretical_memory
-
-    args = convert_config_to_megatron_args(config, strategy)
-    num_microbatches = (
-        config.train.model.global_batch_size
-        // strategy["data_parallel_size"]
-        // strategy["micro_batch_size"]
-    )
-    total_memory = report_theoretical_memory(args, num_microbatches=num_microbatches)
-    return total_memory
+    return default_model_breakdown(strategy, config)["memory_total_mb"]
 
 
 def calculate_hetero_memory(strategy, config):
