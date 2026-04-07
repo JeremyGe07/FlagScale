@@ -23,7 +23,6 @@ SINGLE_STRATEGY_SPACE = {
     "expert_model_parallel_size": [1],
 }
 
-DEFAULT_MEMORY_MODEL_MB = 9876.0
 FAKE_MEMORY_TOTAL_MB = 1234.0
 FAKE_TIME_TOTAL_MS = 78.0
 
@@ -208,6 +207,9 @@ def test_memory_cost_increases_when_reserved_bias_is_present(tmp_path):
     with_bias = _estimate_memory_cost(strategy, config_with_reserved_bias)
 
     assert with_bias["memory_total_mb"] > without_bias["memory_total_mb"]
+    assert with_bias["memory_breakdown"]["reserved_mb"] > without_bias["memory_breakdown"][
+        "reserved_mb"
+    ]
 
 
 def test_memory_cost_reports_recompute_saved_memory(tmp_path):
@@ -295,9 +297,6 @@ def test_searcher_injects_cost_fields_into_strategy(monkeypatch, tmp_path):
 
     searcher_module = importlib.reload(searcher_module)
     monkeypatch.setattr(
-        searcher_module, "default_model", lambda strategy, config: DEFAULT_MEMORY_MODEL_MB
-    )
-    monkeypatch.setattr(
         searcher_module,
         "estimate_memory_cost",
         lambda strategy, config: memory_result,
@@ -313,13 +312,14 @@ def test_searcher_injects_cost_fields_into_strategy(monkeypatch, tmp_path):
     config = build_autotuner_config(
         tmp_path,
         chip_profile={"profile": _build_chip_profile()},
+        include_memory_model=False,
     )
     config.experiment.auto_tuner.space = OmegaConf.create(SINGLE_STRATEGY_SPACE)
     searcher = searcher_module.Searcher(config)
 
     strategy = searcher.strategies[0]
 
-    assert strategy["memory_model"] == DEFAULT_MEMORY_MODEL_MB
+    assert strategy["memory_model"] == FAKE_MEMORY_TOTAL_MB
     assert strategy["memory_breakdown"] == memory_result["memory_breakdown"]
     assert strategy["time_cost"] == time_result["time_total_ms"]
     assert strategy["time_breakdown"] == time_result["time_breakdown"]
