@@ -28,7 +28,15 @@ FAKE_MEMORY_TOTAL_MB = 1234.0
 FAKE_TIME_TOTAL_MS = 78.0
 
 
-def build_autotuner_config(tmp_path, chip_profile=None, algo=None, include_memory_model=True):
+def build_autotuner_config(
+    tmp_path,
+    chip_profile=None,
+    algo=None,
+    include_memory_model=True,
+    runner_nnodes=1,
+    runner_nproc_per_node=2,
+    model_overrides=None,
+):
     auto_tuner = {
         "algo": algo or {"name": "grid"},
     }
@@ -41,23 +49,30 @@ def build_autotuner_config(tmp_path, chip_profile=None, algo=None, include_memor
     if chip_profile is not None:
         auto_tuner["chip_profile"] = chip_profile
 
+    model = {
+        "num_layers": 28,
+        "hidden_size": 1536,
+        "num_attention_heads": 12,
+        "global_batch_size": 32,
+        "seq_length": 2048,
+        "padded_vocab_size": 32000,
+    }
+    if model_overrides:
+        model.update(model_overrides)
+
     return OmegaConf.create(
         {
             "experiment": {
                 "exp_dir": str(tmp_path),
-                "runner": {"nnodes": 1, "nproc_per_node": 2},
+                "runner": {
+                    "nnodes": runner_nnodes,
+                    "nproc_per_node": runner_nproc_per_node,
+                },
                 "auto_tuner": auto_tuner,
             },
             "train": {
                 "system": {"logging": {}},
-                "model": {
-                    "num_layers": 28,
-                    "hidden_size": 1536,
-                    "num_attention_heads": 12,
-                    "global_batch_size": 32,
-                    "seq_length": 2048,
-                    "padded_vocab_size": 32000,
-                },
+                "model": model,
             },
         }
     )
@@ -522,6 +537,77 @@ def test_time_cost_reports_higher_pp_comm_on_weaker_fabric(tmp_path):
     assert pcie["time_breakdown"]["compute_ms"] == pytest.approx(
         fast_fabric["time_breakdown"]["compute_ms"]
     )
+
+
+def test_time_cost_cross_node_dp_comm_is_more_expensive_than_single_node(tmp_path):
+    strategy = _build_strategy(data_parallel_size=2)
+    single_node_config = build_autotuner_config(
+        tmp_path / "single-node",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=2,
+    )
+    cross_node_config = build_autotuner_config(
+        tmp_path / "cross-node",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=2,
+        runner_nproc_per_node=1,
+    )
+
+    single_node = _estimate_time_cost(strategy, single_node_config)
+    cross_node = _estimate_time_cost(strategy, cross_node_config)
+
+    assert cross_node["time_breakdown"]["dp_comm_ms"] > single_node["time_breakdown"]["dp_comm_ms"]
+
+
+def test_time_cost_dense_ep_does_not_reduce_compute_or_dp_cost(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+    )
+    without_ep = _estimate_time_cost(
+        _build_strategy(data_parallel_size=2, expert_model_parallel_size=1),
+        config,
+    )
+    with_ep = _estimate_time_cost(
+        _build_strategy(data_parallel_size=2, expert_model_parallel_size=4),
+        config,
+    )
+
+    assert with_ep["time_breakdown"]["compute_ms"] == pytest.approx(
+        without_ep["time_breakdown"]["compute_ms"]
+    )
+    assert with_ep["time_breakdown"]["dp_comm_ms"] == pytest.approx(
+        without_ep["time_breakdown"]["dp_comm_ms"]
+    )
+
+
+def test_time_cost_moe_ep_adds_explicit_expert_comm_penalty(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides={
+            "num_experts": 8,
+            "moe_router_topk": 2,
+            "moe_layer_freq": 1,
+            "moe_token_dispatcher_type": "alltoall",
+        },
+    )
+    no_ep = _estimate_time_cost(
+        _build_strategy(expert_model_parallel_size=1),
+        config,
+    )
+    with_ep = _estimate_time_cost(
+        _build_strategy(expert_model_parallel_size=4),
+        config,
+    )
+
+    assert with_ep["time_breakdown"]["expert_comm_ms"] > 0
+    assert with_ep["time_total_ms"] > (no_ep["time_total_ms"] / 4.0)
 
 
 def test_calculate_hetero_memory_uses_megatron_args_converter(monkeypatch, tmp_path):

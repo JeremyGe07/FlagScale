@@ -6,6 +6,7 @@ from flagscale.runner.auto_tuner.chip_profile import (
     load_chip_profile,
     normalize_chip_profile,
 )
+from flagscale.runner.auto_tuner.utils import normalize_moe_layer_freq
 
 REQUIRED_MODEL_FIELDS = (
     "num_layers",
@@ -13,6 +14,12 @@ REQUIRED_MODEL_FIELDS = (
     "num_attention_heads",
     "global_batch_size",
     "seq_length",
+)
+OPTIONAL_MOE_MODEL_FIELDS = (
+    "num_experts",
+    "moe_router_topk",
+    "moe_token_dispatcher_type",
+    "moe_ffn_hidden_size",
 )
 REQUIRED_STRATEGY_FIELDS = (
     "data_parallel_size",
@@ -114,10 +121,32 @@ def _build_runtime_profile(config, strategy):
 def _build_model_profile(config):
     train = _require_mapping(config, "train", "config")
     model = _require_mapping(train, "model", "config.train")
-    return {
+    model_profile = {
         field: _require_field(model, field, "config.train.model")
         for field in REQUIRED_MODEL_FIELDS
     }
+    model_profile.update(_build_optional_moe_profile(model))
+    return model_profile
+
+
+def _build_optional_moe_profile(model):
+    if not _has_moe_fields(model):
+        return {}
+    moe_profile = {
+        field: model[field] for field in OPTIONAL_MOE_MODEL_FIELDS if field in model
+    }
+    moe_profile["moe_layer_freq"] = normalize_moe_layer_freq(
+        model.get("moe_layer_freq", 1),
+        num_layers=model["num_layers"],
+    )
+    return moe_profile
+
+
+def _has_moe_fields(model):
+    return any(
+        field in model
+        for field in ("num_experts", "moe_layer_freq", "moe_router_topk")
+    )
 
 
 def _resolve_chip_profile(config):
