@@ -10,6 +10,7 @@ from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.chip_profile import attach_chip_profile, get_attached_chip_profile
 from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
+from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
 from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
@@ -131,28 +132,9 @@ class Searcher:
             "memory_model" in self.config.experiment.auto_tuner
             or get_attached_chip_profile(self.config) is not None
         ):
-            # In the future, the memory model will be loaded by yaml
-            model_name = self.config.experiment.auto_tuner.get("memory_model", {}).get(
-                "model_name", "default"
-            )
-            if model_name != "default":
-                raise NotImplementedError(
-                    "The memory model {} is not implemented yet.".format(model_name)
-                )
-
-            for strategy in self.strategies:
-                memory_cost = estimate_memory_cost(strategy, self.config)
-                strategy["memory_model"] = memory_cost["memory_total_mb"]
-                strategy["memory_breakdown"] = memory_cost["memory_breakdown"]
-                if "memory_model" in self.config.experiment.auto_tuner:
-                    strategy["gpu_utilization"] = self.config.experiment.auto_tuner.memory_model.get(
-                        "gpu_utilization", [0.2, 0.8]
-                    )
-                self.logger.info(
-                    "Searcher: strategy is {}, memory model is {} MB".format(
-                        strategy, strategy["memory_model"]
-                    )
-                )
+            self._inject_memory_costs()
+        if self.config.experiment.auto_tuner.algo.get("use_profiled_time_cost", False):
+            self._inject_time_costs()
 
         # Build search algorithm to explore strategies
         self.algo = self.build_algo(self.strategies, self.config)
@@ -370,6 +352,40 @@ class Searcher:
             strategy["chip_score"] = chip_score["score"]
             strategy["chip_priority"] = chip_score["priority"]
             strategy["chip_score_reasons"] = chip_score["reasons"]
+
+    def _inject_memory_costs(self):
+        model_name = self.config.experiment.auto_tuner.get("memory_model", {}).get(
+            "model_name", "default"
+        )
+        if model_name != "default":
+            raise NotImplementedError(
+                "The memory model {} is not implemented yet.".format(model_name)
+            )
+
+        for strategy in self.strategies:
+            memory_cost = estimate_memory_cost(strategy, self.config)
+            strategy["memory_model"] = memory_cost["memory_total_mb"]
+            strategy["memory_breakdown"] = memory_cost["memory_breakdown"]
+            if "memory_model" in self.config.experiment.auto_tuner:
+                strategy["gpu_utilization"] = self.config.experiment.auto_tuner.memory_model.get(
+                    "gpu_utilization", [0.2, 0.8]
+                )
+            self.logger.info(
+                "Searcher: strategy is {}, memory model is {} MB".format(
+                    strategy, strategy["memory_model"]
+                )
+            )
+
+    def _inject_time_costs(self):
+        for strategy in self.strategies:
+            time_cost = estimate_time_cost(strategy, self.config)
+            strategy["time_cost"] = time_cost["time_total_ms"]
+            strategy["time_breakdown"] = time_cost["time_breakdown"]
+            self.logger.info(
+                "Searcher: strategy is {}, time cost is {} ms".format(
+                    strategy, strategy["time_cost"]
+                )
+            )
 
     def _product_parallel_dims(self, space, config):
         # Avoid space explosion after product

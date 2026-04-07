@@ -26,11 +26,18 @@ class GridAlgo(Algo):
     def __init__(self, strategies, config):
         super().__init__(strategies, config)
         self.idx = 0
+        use_profiled_time_cost = self.config.experiment.auto_tuner.algo.get(
+            "use_profiled_time_cost", False
+        )
         chip_scoring_enabled = self.config.experiment.auto_tuner.algo.get(
             "chip_aware_scoring", False
         )
         has_chip_scores = _strategies_have_chip_scores(self.strategies)
-        if chip_scoring_enabled and has_chip_scores:
+        if use_profiled_time_cost:
+            # Profiled time is a stronger signal than heuristic chip score; keep chip/memory only as
+            # tie-breakers when time-cost ranking is explicitly enabled.
+            self.checkout(mode="time_cost")
+        elif chip_scoring_enabled and has_chip_scores:
             self.strategies = sorted(self.strategies, key=sort_by_chip_score, reverse=True)
         elif not chip_scoring_enabled and "memory_model" in self.config.experiment.auto_tuner:
             self.checkout(mode="memory_model")
@@ -43,6 +50,8 @@ class GridAlgo(Algo):
                 )
         elif mode == "memory_model":
             self.strategies = sorted(self.strategies, key=sort_by_memory_model, reverse=True)
+        elif mode == "time_cost":
+            self.strategies = sorted(self.strategies, key=sort_by_time_cost)
         elif mode == "performance":
             if self.idx > 0 and self.idx < len(self.strategies):
                 self.strategies = self.strategies[: self.idx] + sorted(
@@ -68,6 +77,13 @@ def sort_by_chip_score(strategy):
     chip_score = strategy.get("chip_score", float("-inf"))
     memory_model = strategy.get("memory_model", float("-inf"))
     return (chip_score, memory_model)
+
+
+def sort_by_time_cost(strategy):
+    time_cost = strategy["time_cost"]
+    chip_score = strategy.get("chip_score", float("-inf"))
+    memory_model = strategy.get("memory_model", float("-inf"))
+    return (time_cost, -chip_score, -memory_model)
 
 
 def _strategies_have_chip_scores(strategies):
