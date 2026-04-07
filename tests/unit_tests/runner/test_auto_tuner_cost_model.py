@@ -262,9 +262,16 @@ def test_build_cost_profile_returns_normalized_sections(tmp_path):
             "data_parallel_size": 1,
             "tensor_model_parallel_size": 2,
             "pipeline_model_parallel_size": 1,
+            "num_layers_per_virtual_pipeline_stage": None,
+            "recompute_method": None,
+            "recompute_granularity": None,
+            "recompute_num_layers": None,
             "micro_batch_size": 4,
             "context_parallel_size": 1,
             "expert_model_parallel_size": 1,
+            "acc_step": 8,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
             "sequence_parallel": False,
             "use_distributed_optimizer": False,
             "use_recompute": False,
@@ -302,13 +309,86 @@ def test_build_cost_profile_normalizes_inline_attached_profile_defaults(tmp_path
     }
 
 
-def test_build_cost_profile_requires_attached_chip_profile(tmp_path):
+def test_build_cost_profile_loads_chip_profile_from_path(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    profile_path = tmp_path / "nvidia_l20.yaml"
+    OmegaConf.save(
+        config=OmegaConf.create(_build_chip_profile()),
+        f=str(profile_path),
+    )
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"path": str(profile_path)},
+    )
+
+    result = build_cost_profile(config, _build_strategy())
+
+    assert result["hardware"]["identity"]["name"] == "nvidia_l20"
+    assert result["hardware"]["cost_model"]["reserved_memory_bias_mb"] == 0
+
+
+def test_build_cost_profile_supports_plain_mapping_config(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = {
+        "experiment": {
+            "exp_dir": str(tmp_path),
+            "runner": {"nnodes": 1, "nproc_per_node": 2},
+            "auto_tuner": {"chip_profile": {"profile": _build_chip_profile()}},
+        },
+        "train": {
+            "system": {"logging": {}},
+            "model": {
+                "num_layers": 28,
+                "hidden_size": 1536,
+                "num_attention_heads": 12,
+                "global_batch_size": 32,
+                "seq_length": 2048,
+            },
+        },
+    }
+
+    result = build_cost_profile(config, _build_strategy())
+
+    assert result["runtime"]["world_size"] == 2
+    assert result["runtime"]["strategy"]["acc_step"] == 8
+
+
+def test_build_cost_profile_requires_chip_profile_input(tmp_path):
     from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
 
     config = build_autotuner_config(tmp_path)
 
-    with pytest.raises(ValueError, match="attached chip profile"):
+    with pytest.raises(ValueError, match="config.experiment.auto_tuner.chip_profile"):
         build_cost_profile(config, _build_strategy())
+
+
+def test_build_cost_profile_requires_train_model_fields(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
+    del config.train.model.seq_length
+
+    with pytest.raises(ValueError, match="config.train.model.seq_length"):
+        build_cost_profile(config, _build_strategy())
+
+
+def test_build_cost_profile_requires_strategy_fields(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
+    strategy = _build_strategy()
+    del strategy["acc_step"]
+
+    with pytest.raises(ValueError, match="strategy.acc_step"):
+        build_cost_profile(config, strategy)
 
 
 def test_memory_cost_returns_breakdown_and_total(tmp_path):

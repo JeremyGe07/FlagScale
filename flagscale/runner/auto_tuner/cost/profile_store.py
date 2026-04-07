@@ -2,7 +2,10 @@ from copy import deepcopy
 
 from omegaconf import OmegaConf
 
-from flagscale.runner.auto_tuner.chip_profile import get_chip_profile_or_none
+from flagscale.runner.auto_tuner.chip_profile import (
+    load_chip_profile,
+    normalize_chip_profile,
+)
 
 REQUIRED_MODEL_FIELDS = (
     "num_layers",
@@ -13,27 +16,28 @@ REQUIRED_MODEL_FIELDS = (
 )
 REQUIRED_STRATEGY_FIELDS = (
     "data_parallel_size",
+    "use_distributed_optimizer",
     "tensor_model_parallel_size",
     "pipeline_model_parallel_size",
+    "num_layers_per_virtual_pipeline_stage",
+    "use_recompute",
+    "recompute_method",
+    "recompute_granularity",
+    "recompute_num_layers",
     "micro_batch_size",
     "context_parallel_size",
     "expert_model_parallel_size",
+    "acc_step",
+    "decoder_first_pipeline_num_layers",
+    "decoder_last_pipeline_num_layers",
     "sequence_parallel",
-    "use_distributed_optimizer",
-    "use_recompute",
 )
 
 
 def build_cost_profile(config, strategy):
-    profile = get_chip_profile_or_none(config)
-    if profile is None:
-        raise ValueError(
-            "build_cost_profile requires an attached chip profile. "
-            "Call attach_chip_profile(config) first."
-        )
-
     config_dict = _to_plain_mapping(config, "config")
     strategy_dict = _to_plain_mapping(strategy, "strategy")
+    profile = _resolve_chip_profile(config_dict)
     return {
         "hardware": _build_hardware_profile(profile),
         "runtime": _build_runtime_profile(config_dict, strategy_dict),
@@ -114,6 +118,26 @@ def _build_model_profile(config):
         field: _require_field(model, field, "config.train.model")
         for field in REQUIRED_MODEL_FIELDS
     }
+
+
+def _resolve_chip_profile(config):
+    experiment = _require_mapping(config, "experiment", "config")
+    auto_tuner = _require_mapping(experiment, "auto_tuner", "config.experiment")
+    chip_profile = _require_mapping(
+        auto_tuner,
+        "chip_profile",
+        "config.experiment.auto_tuner",
+    )
+    if "profile" in chip_profile:
+        return normalize_chip_profile(
+            _to_plain_mapping(chip_profile["profile"], "chip profile")
+        )
+    if "path" in chip_profile:
+        return load_chip_profile(chip_profile["path"])
+    raise ValueError(
+        "Missing required field: config.experiment.auto_tuner.chip_profile.profile "
+        "or config.experiment.auto_tuner.chip_profile.path"
+    )
 
 
 def _to_plain_mapping(value, name):
