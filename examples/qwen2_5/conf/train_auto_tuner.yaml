@@ -30,12 +30,16 @@ experiment:
     NCCL_IB_HCA: mlx5_2,mlx5_5
     WANDB_MODE: offline
   auto_tuner:
-    # Optional chip profile entry point for future pruning / ranking / topology work.
-    # Keep disabled in the current bounded baseline so today's results stay comparable.
+    # Optional chip/profile-driven entry points for pruning, ranking, and cost-model trials.
+    # Keep them disabled in the current bounded baseline so today's 10-candidate behavior
+    # and result wording stay comparable.
     # chip_profile:
     #   path: hardware/chip_profiles/nvidia_l20.yaml
     # algo:
-    #   chip_aware_scoring: true  # enable chip-aware ranking here.
+    #   chip_aware_scoring: true   # attach chip_score/chip_priority for chip-aware ranking.
+    #   use_profiled_time_cost: true
+    #   # When enabled together with chip_profile, Searcher injects per-strategy
+    #   # time_cost/time_breakdown and GridAlgo sorts by profiled relative time cost.
     # When this stays false or omitted, baseline search behavior remains unchanged.
     space:
       # Homogeneous train autotuner supports these built-in strategy dims:
@@ -81,6 +85,9 @@ experiment:
       model_name: default
       gpu_memory: 46000
       gpu_utilization: [0.1, 1.0]
+      # With memory_model configured, Searcher writes per-strategy memory_model and
+      # memory_breakdown fields. If chip_profile is also enabled, the same entry point
+      # becomes the profile-driven memory prune/ranking input for cost-model experiments.
 
 train:
   model:
