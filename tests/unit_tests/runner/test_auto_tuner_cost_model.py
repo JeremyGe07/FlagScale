@@ -447,6 +447,34 @@ def test_memory_cost_reports_recompute_saved_memory(tmp_path):
     assert with_recompute["memory_total_mb"] <= no_recompute["memory_total_mb"]
 
 
+def test_memory_cost_reuses_megatron_moe_layer_freq_parsing(tmp_path):
+    from flagscale.runner.auto_tuner.cost.memory_cost import _build_memory_args
+
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
+    config.train.model.num_experts = 8
+    config.train.model.moe_router_topk = 2
+    config.train.model.moe_layer_freq = "[0]+[1]*3"
+
+    args = _build_memory_args(config, _build_strategy())
+
+    assert args.moe_layer_freq == [0, 1, 1, 1] * 7
+
+
+def test_memory_cost_estimator_does_not_print_to_stdout(tmp_path, capsys):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
+
+    _estimate_memory_cost(_build_strategy(), config)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+
+
 def test_time_cost_returns_breakdown_and_total(tmp_path):
     config = build_autotuner_config(
         tmp_path,

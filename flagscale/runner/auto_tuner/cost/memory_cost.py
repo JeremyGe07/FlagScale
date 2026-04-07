@@ -2,6 +2,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 from flagscale.runner.auto_tuner.chip_profile import get_chip_profile_or_none
+from flagscale.runner.auto_tuner.utils import normalize_moe_layer_freq
 from flagscale.train.theoretical_memory_usage import (
     NUM_BYTES_IN_MEGABYTE,
     compute_activation_memory,
@@ -63,10 +64,8 @@ def _build_memory_args(config, strategy):
     return args
 
 
-def _normalize_moe_layer_freq(value):
-    if isinstance(value, (int, list)):
-        return value
-    return int(value)
+def _normalize_moe_layer_freq(value, num_layers):
+    return normalize_moe_layer_freq(value, num_layers=num_layers)
 
 
 def _populate_model_args(args, config, flagscale_args):
@@ -89,7 +88,10 @@ def _populate_model_args(args, config, flagscale_args):
     args.moe_shared_expert_intermediate_size = flagscale_args.get(
         "moe_shared_expert_intermediate_size", None
     )
-    args.moe_layer_freq = _normalize_moe_layer_freq(flagscale_args.get("moe_layer_freq", 1))
+    args.moe_layer_freq = _normalize_moe_layer_freq(
+        flagscale_args.get("moe_layer_freq", 1),
+        args.num_layers,
+    )
     args.moe_router_topk = flagscale_args.get("moe_router_topk", None)
     args.mtp_num_layers = flagscale_args.get("mtp_num_layers", None)
     args.swiglu = flagscale_args.get("swiglu", False)

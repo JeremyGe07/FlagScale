@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 
@@ -109,11 +110,63 @@ def compare_by_recompute(strategy1, strategy2):
     return result
 
 
-def convert_config_to_megatron_args(config, strategy):
+def _ensure_megatron_path():
     autotuner_dir = os.path.dirname(__file__)
-    great_grandparent_dir = os.path.dirname(os.path.dirname(os.path.dirname(autotuner_dir)))
-    sys.path.insert(0, os.path.join(great_grandparent_dir, "third_party/Megatron-LM"))
-    from megatron.training.arguments import moe_freq_type
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(autotuner_dir)))
+    megatron_path = os.path.join(repo_root, "third_party/Megatron-LM")
+    if megatron_path not in sys.path:
+        sys.path.insert(0, megatron_path)
+
+
+def normalize_moe_layer_freq(value, num_layers=None):
+    if isinstance(value, (int, list)):
+        normalized = value
+    else:
+        try:
+            parsed_value = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            normalized = _parse_moe_layer_freq_expr(value)
+        else:
+            if not isinstance(parsed_value, (int, list)):
+                raise ValueError(f"Unsupported moe_layer_freq value: {value}")
+            normalized = parsed_value
+
+    if num_layers is not None and isinstance(normalized, list):
+        if not normalized:
+            raise ValueError("moe_layer_freq list must not be empty")
+        if len(normalized) < num_layers:
+            repeats = (num_layers + len(normalized) - 1) // len(normalized)
+            return (normalized * repeats)[:num_layers]
+    return normalized
+
+
+def _parse_moe_layer_freq_expr(value):
+    def _eval(node):
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.List):
+            return [_eval(element) for element in node.elts]
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = _eval(node.left)
+            right = _eval(node.right)
+            if isinstance(left, list) and isinstance(right, list):
+                return left + right
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            left = _eval(node.left)
+            right = _eval(node.right)
+            if isinstance(left, list) and isinstance(right, int):
+                return left * right
+            if isinstance(left, int) and isinstance(right, list):
+                return right * left
+        raise ValueError(f"Unsupported moe_layer_freq expression: {value}")
+
+    return _eval(ast.parse(value, mode="eval"))
+
+
+def convert_config_to_megatron_args(config, strategy):
+    _ensure_megatron_path()
     from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
 
     print(f"{strategy=}")
@@ -159,7 +212,7 @@ def convert_config_to_megatron_args(config, strategy):
     args.moe_shared_expert_intermediate_size = flagscale_args.get(
         "moe_shared_expert_intermediate_size", None
     )
-    args.moe_layer_freq = moe_freq_type(flagscale_args.get("moe_layer_freq", 1))
+    args.moe_layer_freq = normalize_moe_layer_freq(flagscale_args.get("moe_layer_freq", 1))
     args.moe_router_topk = flagscale_args.get("moe_router_topk", None)
     args.mtp_num_layers = flagscale_args.get("mtp_num_layers", None)
 
