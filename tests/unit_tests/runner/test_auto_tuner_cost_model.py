@@ -180,7 +180,10 @@ def _install_fake_cost_modules(monkeypatch, memory_result, time_result):
 
 
 def test_memory_cost_returns_breakdown_and_total(tmp_path):
-    config = build_autotuner_config(tmp_path, chip_profile={"profile": _build_chip_profile()})
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
     strategy = _build_strategy()
 
     result = _estimate_memory_cost(strategy, config)
@@ -208,7 +211,10 @@ def test_memory_cost_increases_when_reserved_bias_is_present(tmp_path):
 
 
 def test_memory_cost_reports_recompute_saved_memory(tmp_path):
-    config = build_autotuner_config(tmp_path, chip_profile={"profile": _build_chip_profile()})
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
     strategy_without_recompute = _build_strategy()
     strategy_with_recompute = _build_strategy(
         use_recompute=True,
@@ -225,7 +231,10 @@ def test_memory_cost_reports_recompute_saved_memory(tmp_path):
 
 
 def test_time_cost_returns_breakdown_and_total(tmp_path):
-    config = build_autotuner_config(tmp_path, chip_profile={"profile": _build_chip_profile()})
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
     strategy = _build_strategy()
 
     result = _estimate_time_cost(strategy, config)
@@ -261,7 +270,10 @@ def test_time_cost_reports_higher_pp_comm_on_weaker_fabric(tmp_path):
 
     assert pcie["time_breakdown"]["pp_comm_ms"] > 0
     assert fast_fabric["time_breakdown"]["pp_comm_ms"] > 0
-    assert pcie["time_breakdown"]["pp_comm_ms"] > fast_fabric["time_breakdown"]["pp_comm_ms"]
+    assert (
+        pcie["time_breakdown"]["pp_comm_ms"]
+        > fast_fabric["time_breakdown"]["pp_comm_ms"]
+    )
     assert pcie["time_breakdown"]["compute_ms"] == pytest.approx(
         fast_fabric["time_breakdown"]["compute_ms"]
     )
@@ -298,7 +310,10 @@ def test_searcher_injects_cost_fields_into_strategy(monkeypatch, tmp_path):
         raising=False,
     )
 
-    config = build_autotuner_config(tmp_path, chip_profile={"profile": _build_chip_profile()})
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
     config.experiment.auto_tuner.space = OmegaConf.create(SINGLE_STRATEGY_SPACE)
     searcher = searcher_module.Searcher(config)
 
