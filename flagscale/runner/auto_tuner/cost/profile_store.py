@@ -135,11 +135,18 @@ def _build_optional_moe_profile(model):
     moe_profile = {
         field: model[field] for field in OPTIONAL_MOE_MODEL_FIELDS if field in model
     }
-    moe_profile["moe_layer_freq"] = normalize_moe_layer_freq(
+    moe_profile["moe_layer_freq"] = _materialize_moe_layer_pattern(
         model.get("moe_layer_freq", 1),
         num_layers=model["num_layers"],
     )
     return moe_profile
+
+
+def _materialize_moe_layer_pattern(value, num_layers):
+    normalized = normalize_moe_layer_freq(value, num_layers=num_layers)
+    if isinstance(normalized, int):
+        return [1 if (idx % normalized == 0) else 0 for idx in range(num_layers)]
+    return normalized
 
 
 def _has_moe_fields(model):

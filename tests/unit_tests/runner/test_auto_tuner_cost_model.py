@@ -610,6 +610,93 @@ def test_time_cost_moe_ep_adds_explicit_expert_comm_penalty(tmp_path):
     assert with_ep["time_total_ms"] > (no_ep["time_total_ms"] / 4.0)
 
 
+def test_time_cost_moe_layer_freq_int_matches_materialized_pattern(tmp_path):
+    model_overrides = {
+        "num_experts": 8,
+        "moe_router_topk": 2,
+        "moe_token_dispatcher_type": "alltoall",
+    }
+    int_freq_config = build_autotuner_config(
+        tmp_path / "int-freq",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides={**model_overrides, "moe_layer_freq": 2},
+    )
+    pattern = [1 if (i % 2 == 0) else 0 for i in range(28)]
+    pattern_config = build_autotuner_config(
+        tmp_path / "pattern-freq",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides={**model_overrides, "moe_layer_freq": pattern},
+    )
+
+    int_freq = _estimate_time_cost(_build_strategy(), int_freq_config)
+    pattern_freq = _estimate_time_cost(_build_strategy(), pattern_config)
+
+    assert int_freq["time_breakdown"]["compute_ms"] == pytest.approx(
+        pattern_freq["time_breakdown"]["compute_ms"]
+    )
+    assert int_freq["time_breakdown"]["expert_comm_ms"] == pytest.approx(
+        pattern_freq["time_breakdown"]["expert_comm_ms"]
+    )
+
+
+def test_time_cost_tp_does_not_treat_cp_as_tp_cross_node_trigger(tmp_path):
+    strategy = _build_strategy(tensor_model_parallel_size=2, context_parallel_size=2)
+    single_node_config = build_autotuner_config(
+        tmp_path / "single-node",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+    )
+    multi_node_config = build_autotuner_config(
+        tmp_path / "multi-node",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=2,
+        runner_nproc_per_node=2,
+    )
+
+    single_node = _estimate_time_cost(strategy, single_node_config)
+    multi_node = _estimate_time_cost(strategy, multi_node_config)
+
+    assert multi_node["time_breakdown"]["tp_comm_ms"] == pytest.approx(
+        single_node["time_breakdown"]["tp_comm_ms"]
+    )
+
+
+def test_time_cost_ep_keeps_intra_node_when_ep_group_fits_on_one_node(tmp_path):
+    strategy = _build_strategy(expert_model_parallel_size=2)
+    model_overrides = {
+        "num_experts": 8,
+        "moe_router_topk": 2,
+        "moe_layer_freq": 1,
+        "moe_token_dispatcher_type": "alltoall",
+    }
+    single_node_config = build_autotuner_config(
+        tmp_path / "single-node",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides=model_overrides,
+    )
+    multi_node_config = build_autotuner_config(
+        tmp_path / "multi-node",
+        chip_profile={"profile": _build_chip_profile()},
+        runner_nnodes=2,
+        runner_nproc_per_node=4,
+        model_overrides=model_overrides,
+    )
+
+    single_node = _estimate_time_cost(strategy, single_node_config)
+    multi_node = _estimate_time_cost(strategy, multi_node_config)
+
+    assert multi_node["time_breakdown"]["expert_comm_ms"] == pytest.approx(
+        single_node["time_breakdown"]["expert_comm_ms"]
+    )
+
+
 def test_calculate_hetero_memory_uses_megatron_args_converter(monkeypatch, tmp_path):
     import flagscale.runner.auto_tuner.hetero.hetero_theoretical_memory as hetero_memory_module
     import flagscale.runner.auto_tuner.memory_model as memory_model_module

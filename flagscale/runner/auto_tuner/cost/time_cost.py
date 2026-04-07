@@ -35,14 +35,22 @@ DEFAULT_TIME_BREAKDOWN = {
     "expert_comm_ms": 0.0,
     "recompute_ms": 0.0,
 }
+
+
 def estimate_time_cost(strategy, config):
     profile = build_cost_profile(config, strategy)
     breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
     compute_ms = _estimate_compute_ms(profile)
     breakdown["compute_ms"] = compute_ms
-    breakdown["tp_comm_ms"] = _apply_overlap(_estimate_tp_comm_ms(profile), profile, "tp_comm_overlap_ratio")
-    breakdown["dp_comm_ms"] = _apply_overlap(_estimate_dp_comm_ms(profile), profile, "dp_comm_overlap_ratio")
-    breakdown["pp_comm_ms"] = _apply_overlap(_estimate_pp_comm_ms(profile), profile, "pp_comm_overlap_ratio")
+    breakdown["tp_comm_ms"] = _apply_overlap(
+        _estimate_tp_comm_ms(profile), profile, "tp_comm_overlap_ratio"
+    )
+    breakdown["dp_comm_ms"] = _apply_overlap(
+        _estimate_dp_comm_ms(profile), profile, "dp_comm_overlap_ratio"
+    )
+    breakdown["pp_comm_ms"] = _apply_overlap(
+        _estimate_pp_comm_ms(profile), profile, "pp_comm_overlap_ratio"
+    )
     breakdown["expert_comm_ms"] = _estimate_expert_comm_ms(profile)
     breakdown["recompute_ms"] = _estimate_recompute_ms(profile, compute_ms)
     return {"time_total_ms": sum(breakdown.values()), "time_breakdown": breakdown}
@@ -50,6 +58,8 @@ def estimate_time_cost(strategy, config):
 
 def _estimate_compute_ms(profile):
     return _estimate_dense_compute_ms(profile) + _estimate_expert_compute_ms(profile)
+
+
 def _estimate_dense_compute_ms(profile):
     strategy = profile["runtime"]["strategy"]
     model = profile["model"]
@@ -60,7 +70,9 @@ def _estimate_dense_compute_ms(profile):
         * float(model["hidden_size"])
         * COMPUTE_FLOPS_FACTOR
     )
-    return _flops_to_ms(total_flops / _dense_parallel_factor(strategy), _effective_tflops(profile))
+    return _flops_to_ms(
+        total_flops / _dense_parallel_factor(strategy), _effective_tflops(profile)
+    )
 
 
 def _estimate_expert_compute_ms(profile):
@@ -78,7 +90,9 @@ def _estimate_expert_compute_ms(profile):
         * float(model.get("moe_router_topk", DEFAULT_MOE_ROUTER_TOPK))
         * MOE_EXPERT_FLOPS_FACTOR
     )
-    parallel_factor = _dense_parallel_factor(strategy) * _effective_expert_parallel_size(strategy, model)
+    parallel_factor = _dense_parallel_factor(strategy) * _effective_expert_parallel_size(
+        strategy, model
+    )
     return _flops_to_ms(total_flops / parallel_factor, _effective_tflops(profile))
 
 
@@ -91,7 +105,11 @@ def _estimate_tp_comm_ms(profile):
     if strategy["sequence_parallel"]:
         volume_bytes *= 0.75
     bandwidth_gbps, latency_us, _ = _communication_link(profile, "tp", "collective")
-    repetitions = strategy["acc_step"] * _stage_layers(profile["model"]["num_layers"], strategy) * TP_COMM_CALLS_PER_LAYER
+    repetitions = (
+        strategy["acc_step"]
+        * _stage_layers(profile["model"]["num_layers"], strategy)
+        * TP_COMM_CALLS_PER_LAYER
+    )
     return _collective_ms(volume_bytes, bandwidth_gbps, latency_us, tp_size, repetitions)
 
 
@@ -114,7 +132,9 @@ def _estimate_pp_comm_ms(profile):
         return 0.0
     bandwidth_gbps, latency_us, fabric = _communication_link(profile, "pp", "p2p")
     transfers = strategy["acc_step"] * (pp_size - 1) * PP_TRANSFERS_PER_MICROBATCH
-    base_ms = _transfer_ms(_activation_bytes(profile), bandwidth_gbps, latency_us, transfers)
+    base_ms = _transfer_ms(
+        _activation_bytes(profile), bandwidth_gbps, latency_us, transfers
+    )
     return base_ms * FABRIC_PENALTIES.get(str(fabric).lower(), DEFAULT_FABRIC_PENALTY)
 
 
@@ -125,7 +145,9 @@ def _estimate_expert_comm_ms(profile):
         return 0.0
     bandwidth_gbps, latency_us, _ = _communication_link(profile, "ep", "collective")
     repetitions = strategy["acc_step"] * _stage_moe_layers(profile) * _dispatcher_exchanges(model)
-    volume_bytes = _activation_bytes(profile) * float(model.get("moe_router_topk", DEFAULT_MOE_ROUTER_TOPK))
+    volume_bytes = _activation_bytes(profile) * float(
+        model.get("moe_router_topk", DEFAULT_MOE_ROUTER_TOPK)
+    )
     return _collective_ms(
         volume_bytes,
         bandwidth_gbps,
@@ -148,6 +170,8 @@ def _estimate_recompute_ms(profile, compute_ms):
         * _recompute_granularity_factor(strategy["recompute_granularity"])
         * _recompute_method_factor(strategy["recompute_method"])
     )
+
+
 def _tokens_per_iteration(profile):
     strategy = profile["runtime"]["strategy"]
     model = profile["model"]
@@ -175,7 +199,12 @@ def _stage_layers(num_layers, strategy):
 def _activation_bytes(profile):
     strategy = profile["runtime"]["strategy"]
     model = profile["model"]
-    return strategy["micro_batch_size"] * model["seq_length"] * model["hidden_size"] * BF16_BYTES
+    return (
+        strategy["micro_batch_size"]
+        * model["seq_length"]
+        * model["hidden_size"]
+        * BF16_BYTES
+    )
 
 
 def _parameter_bytes(profile):
@@ -183,8 +212,13 @@ def _parameter_bytes(profile):
     model = profile["model"]
     hidden_size = float(model["hidden_size"])
     vocab_size = hidden_size * 16.0
-    dense_params = (12.0 * hidden_size * hidden_size * model["num_layers"]) + (vocab_size * hidden_size)
-    dense_partition = strategy["tensor_model_parallel_size"] * strategy["pipeline_model_parallel_size"]
+    dense_params = (12.0 * hidden_size * hidden_size * model["num_layers"]) + (
+        vocab_size * hidden_size
+    )
+    dense_partition = (
+        strategy["tensor_model_parallel_size"]
+        * strategy["pipeline_model_parallel_size"]
+    )
     dense_bytes = (dense_params * BF16_BYTES) / dense_partition
     if not _is_moe_model(model):
         return dense_bytes
@@ -211,7 +245,9 @@ def _transfer_ms(volume_bytes, bandwidth_gbps, latency_us, repetitions):
     if repetitions <= 0:
         return 0.0
     bandwidth_bytes_per_second = (bandwidth_gbps * GIGA) / BITS_PER_BYTE
-    transfer_ms = (volume_bytes * repetitions / bandwidth_bytes_per_second) * MILLISECONDS_PER_SECOND
+    transfer_ms = (
+        volume_bytes * repetitions / bandwidth_bytes_per_second
+    ) * MILLISECONDS_PER_SECOND
     latency_ms = repetitions * (latency_us / MILLISECONDS_PER_SECOND)
     return transfer_ms + latency_ms
 
@@ -231,6 +267,8 @@ def _dense_parallel_factor(strategy):
 
 def _is_moe_model(model):
     return int(model.get("num_experts") or 0) > 1
+
+
 def _stage_moe_layers(profile):
     model = profile["model"]
     strategy = profile["runtime"]["strategy"]
@@ -242,6 +280,8 @@ def _moe_layer_ratio(model):
     if isinstance(moe_layer_freq, list) and moe_layer_freq:
         return sum(1 for layer in moe_layer_freq if layer) / len(moe_layer_freq)
     return 1.0 if _is_moe_model(model) else 0.0
+
+
 def _moe_expert_params(model):
     hidden_size = float(model["hidden_size"])
     moe_hidden_size = float(model.get("moe_ffn_hidden_size", hidden_size * 4.0))
@@ -253,6 +293,8 @@ def _moe_expert_params(model):
 def _effective_expert_parallel_size(strategy, model):
     ep_size = strategy["expert_model_parallel_size"]
     return float(max(1, min(ep_size, int(model.get("num_experts") or 1))))
+
+
 def _dispatcher_exchanges(model):
     if str(model.get("moe_token_dispatcher_type", "allgather")).lower() == "alltoall":
         return MOE_ALLTOALL_EXCHANGES
@@ -263,27 +305,47 @@ def _communication_link(profile, kind, traffic):
     interconnect = profile["hardware"]["interconnect"]
     if _group_spans_nodes(profile, kind):
         host_device = interconnect["host_device"]
-        return float(host_device["bandwidth_gbps"]), float(host_device["latency_us"]), "host_device"
+        return (
+            float(host_device["bandwidth_gbps"]),
+            float(host_device["latency_us"]),
+            "host_device",
+        )
     intra_node = interconnect["intra_node"]
     if traffic == "p2p":
-        return float(intra_node["p2p_bandwidth_gbps"]), float(intra_node["p2p_latency_us"]), intra_node["fabric"]
-    return float(intra_node["all_reduce_bandwidth_gbps"]), float(intra_node["all_reduce_latency_us"]), intra_node["fabric"]
+        return (
+            float(intra_node["p2p_bandwidth_gbps"]),
+            float(intra_node["p2p_latency_us"]),
+            intra_node["fabric"],
+        )
+    return (
+        float(intra_node["all_reduce_bandwidth_gbps"]),
+        float(intra_node["all_reduce_latency_us"]),
+        intra_node["fabric"],
+    )
+
+
 def _group_spans_nodes(profile, kind):
     runtime = profile["runtime"]
-    strategy = runtime["strategy"]
-    node_capacity = runtime["nproc_per_node"]
-    local_parallel = _dense_parallel_factor(strategy)
-    if kind == "tp":
-        return local_parallel > node_capacity
-    if kind == "pp":
-        return local_parallel * strategy["pipeline_model_parallel_size"] > node_capacity
-    if kind == "ep":
-        return strategy["expert_model_parallel_size"] > 1 and (
-            runtime["nnodes"] > 1 or local_parallel * strategy["expert_model_parallel_size"] > node_capacity
-        )
+    if runtime["nnodes"] <= 1:
+        return False
+    if kind in ("tp", "ep", "pp"):
+        return _group_size(profile, kind) > runtime["nproc_per_node"]
     if kind == "dp":
-        return runtime["nnodes"] > 1 and strategy["data_parallel_size"] > 1
+        return runtime["strategy"]["data_parallel_size"] > 1
     raise ValueError(f"Unsupported communication kind: {kind}")
+
+
+def _group_size(profile, kind):
+    strategy = profile["runtime"]["strategy"]
+    if kind == "tp":
+        return strategy["tensor_model_parallel_size"]
+    if kind == "ep":
+        return strategy["expert_model_parallel_size"]
+    if kind == "pp":
+        return strategy["pipeline_model_parallel_size"]
+    raise ValueError(f"Unsupported communication kind: {kind}")
+
+
 def _recompute_granularity_factor(granularity):
     if granularity == "selective":
         return RECOMPUTE_SELECTIVE_FACTOR
