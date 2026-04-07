@@ -36,6 +36,21 @@ INTERCONNECT_FIELDS = {
     "host_device": ("bandwidth_gbps", "latency_us"),
 }
 ALLOWED_PRIORITIES = {"memory", "performance"}
+DEFAULT_COST_MODEL = {
+    "reserved_memory_bias_mb": 0,
+    "peak_activation_bias_mb": 0,
+    "overlap": {
+        "dp_comm_overlap_ratio": 0.0,
+        "tp_comm_overlap_ratio": 0.0,
+        "pp_comm_overlap_ratio": 0.0,
+    },
+}
+COST_MODEL_BIAS_FIELDS = ("reserved_memory_bias_mb", "peak_activation_bias_mb")
+COST_MODEL_OVERLAP_FIELDS = (
+    "dp_comm_overlap_ratio",
+    "tp_comm_overlap_ratio",
+    "pp_comm_overlap_ratio",
+)
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -63,6 +78,10 @@ def attach_chip_profile(config):
 
 
 def get_attached_chip_profile(config):
+    return get_chip_profile_or_none(config)
+
+
+def get_chip_profile_or_none(config):
     auto_tuner_cfg = config.experiment.get("auto_tuner", None)
     if auto_tuner_cfg is None or "chip_profile" not in auto_tuner_cfg:
         return None
@@ -89,6 +108,7 @@ def _normalize_chip_profile(profile):
     _validate_boolean_fields("kernel_support", normalized["kernel_support"])
     _validate_topology(normalized["topology"])
     _validate_strategy_hints(normalized["strategy_hints"])
+    normalized["cost_model"] = _normalize_cost_model(normalized.get("cost_model"))
     return normalized
 
 
@@ -148,6 +168,34 @@ def _validate_strategy_hints(strategy_hints):
             raise ValueError("Each disabled chip-profile dim must map to a list of values.")
 
 
+def _normalize_cost_model(cost_model):
+    if cost_model is None:
+        return deepcopy(DEFAULT_COST_MODEL)
+    if not isinstance(cost_model, dict):
+        raise ValueError("Chip profile section 'cost_model' must be a mapping.")
+
+    normalized = deepcopy(DEFAULT_COST_MODEL)
+    for field in COST_MODEL_BIAS_FIELDS:
+        if field in cost_model:
+            normalized[field] = _require_non_negative_number(
+                f"cost_model.{field}",
+                cost_model[field],
+            )
+
+    overlap = cost_model.get("overlap", {})
+    if overlap is None:
+        raise ValueError("Chip profile section 'cost_model.overlap' must be a mapping.")
+    if not isinstance(overlap, dict):
+        raise ValueError("Chip profile section 'cost_model.overlap' must be a mapping.")
+    for field in COST_MODEL_OVERLAP_FIELDS:
+        if field in overlap:
+            normalized["overlap"][field] = _require_ratio(
+                f"cost_model.overlap.{field}",
+                overlap[field],
+            )
+    return normalized
+
+
 def _require_mapping(section_name, section):
     if not isinstance(section, dict):
         raise ValueError(f"Chip profile section '{section_name}' must be a mapping.")
@@ -166,3 +214,16 @@ def _require_positive_fields(section_name, section, fields):
         value = section[field]
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"Chip profile field '{section_name}.{field}' must be positive.")
+
+
+def _require_non_negative_number(field_name, value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"Chip profile field '{field_name}' must be non-negative.")
+    return value
+
+
+def _require_ratio(field_name, value):
+    numeric_value = _require_non_negative_number(field_name, value)
+    if numeric_value > 1:
+        raise ValueError(f"Chip profile field '{field_name}' must be in [0, 1].")
+    return numeric_value

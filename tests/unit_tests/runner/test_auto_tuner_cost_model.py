@@ -180,6 +180,114 @@ def _install_fake_cost_modules(monkeypatch, memory_result, time_result):
     monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.cost.time_cost", time_mod)
 
 
+def test_load_chip_profile_fills_default_cost_model_fields(tmp_path):
+    from flagscale.runner.auto_tuner.chip_profile import load_chip_profile
+
+    profile_path = tmp_path / "nvidia_l20.yaml"
+    profile_path.write_text(
+        """
+schema_version: v1alpha1
+identity:
+  name: nvidia_l20
+  vendor: nvidia
+  chip_class: gpu
+memory:
+  total_memory_mb: 46000
+  bandwidth_gbps: 864
+compute:
+  bf16_tflops: 119.5
+  attention_tflops: 119.5
+interconnect:
+  intra_node:
+    fabric: pcie
+    p2p_bandwidth_gbps: 64
+    p2p_latency_us: 3
+    all_reduce_bandwidth_gbps: 45
+    all_reduce_latency_us: 8
+  host_device:
+    bandwidth_gbps: 24
+    latency_us: 10
+kernel_support:
+  transformer_engine: true
+  flash_attention: true
+  fused_rmsnorm: true
+topology:
+  max_nodes: 1
+  devices_per_node: 2
+  homogeneous_only: true
+strategy_hints:
+  default_search_priority: performance
+  max_tensor_model_parallel_size: 2
+  max_pipeline_model_parallel_size: 2
+  disabled_dims: {}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    profile = load_chip_profile(str(profile_path))
+
+    assert profile["cost_model"] == {
+        "reserved_memory_bias_mb": 0,
+        "peak_activation_bias_mb": 0,
+        "overlap": {
+            "dp_comm_overlap_ratio": 0.0,
+            "tp_comm_overlap_ratio": 0.0,
+            "pp_comm_overlap_ratio": 0.0,
+        },
+    }
+
+
+def test_build_cost_profile_returns_normalized_sections(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+    )
+    strategy = _build_strategy(
+        tensor_model_parallel_size=2,
+        pipeline_model_parallel_size=1,
+        micro_batch_size=4,
+    )
+
+    result = build_cost_profile(config, strategy)
+
+    assert result["hardware"]["memory"]["total_memory_mb"] == 46000
+    assert result["hardware"]["cost_model"]["peak_activation_bias_mb"] == 0
+    assert result["runtime"] == {
+        "nnodes": 1,
+        "nproc_per_node": 2,
+        "world_size": 2,
+        "strategy": {
+            "data_parallel_size": 1,
+            "tensor_model_parallel_size": 2,
+            "pipeline_model_parallel_size": 1,
+            "micro_batch_size": 4,
+            "context_parallel_size": 1,
+            "expert_model_parallel_size": 1,
+            "sequence_parallel": False,
+            "use_distributed_optimizer": False,
+            "use_recompute": False,
+        },
+    }
+    assert result["model"] == {
+        "num_layers": 28,
+        "hidden_size": 1536,
+        "num_attention_heads": 12,
+        "global_batch_size": 32,
+        "seq_length": 2048,
+    }
+
+
+def test_build_cost_profile_requires_attached_chip_profile(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = build_autotuner_config(tmp_path)
+
+    with pytest.raises(ValueError, match="attached chip profile"):
+        build_cost_profile(config, _build_strategy())
+
+
 def test_memory_cost_returns_breakdown_and_total(tmp_path):
     config = build_autotuner_config(
         tmp_path,

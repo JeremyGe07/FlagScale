@@ -45,3 +45,11 @@ strategy_hints:
   disabled_dims:
     context_parallel_size: [2, 4]
     expert_model_parallel_size: [2, 4]
+
+cost_model:
+  reserved_memory_bias_mb: 0
+  peak_activation_bias_mb: 0
+  overlap:
+    dp_comm_overlap_ratio: 0.0
+    tp_comm_overlap_ratio: 0.0
+    pp_comm_overlap_ratio: 0.0
