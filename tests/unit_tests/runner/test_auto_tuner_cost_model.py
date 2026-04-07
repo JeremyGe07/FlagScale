@@ -538,12 +538,7 @@ def test_searcher_only_injects_memory_cost_fields_into_strategy(monkeypatch, tmp
         "memory_total_mb": FAKE_MEMORY_TOTAL_MB,
         "memory_breakdown": {"peak_mb": 234.0, "reserved_mb": 56.0},
     }
-    time_result = {
-        "time_total_ms": FAKE_TIME_TOTAL_MS,
-        "time_breakdown": {"compute_ms": 12.0, "pp_comm_ms": 3.0},
-    }
-
-    _install_fake_cost_modules(monkeypatch, memory_result, time_result)
+    _install_fake_cost_modules(monkeypatch, memory_result, {})
 
     import flagscale.runner.auto_tuner.search.searcher as searcher_module
 
@@ -552,12 +547,6 @@ def test_searcher_only_injects_memory_cost_fields_into_strategy(monkeypatch, tmp
         searcher_module,
         "estimate_memory_cost",
         lambda strategy, config: memory_result,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        searcher_module,
-        "estimate_time_cost",
-        lambda strategy, config: time_result,
         raising=False,
     )
 
