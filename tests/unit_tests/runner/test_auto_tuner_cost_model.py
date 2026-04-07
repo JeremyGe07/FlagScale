@@ -168,6 +168,8 @@ def _install_fake_cost_modules(monkeypatch, memory_result, time_result):
 
     memory_mod.estimate_memory_cost = lambda strategy, config: memory_result
     time_mod.estimate_time_cost = lambda strategy, config: time_result
+    cost_pkg.estimate_memory_cost = memory_mod.estimate_memory_cost
+    cost_pkg.estimate_time_cost = time_mod.estimate_time_cost
     cost_pkg.memory_cost = memory_mod
     cost_pkg.time_cost = time_mod
 
