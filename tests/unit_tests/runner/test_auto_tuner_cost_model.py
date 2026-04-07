@@ -279,6 +279,29 @@ def test_build_cost_profile_returns_normalized_sections(tmp_path):
     }
 
 
+def test_build_cost_profile_normalizes_inline_attached_profile_defaults(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    inline_profile = _build_chip_profile()
+    inline_profile.pop("cost_model")
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": inline_profile},
+    )
+
+    result = build_cost_profile(config, _build_strategy())
+
+    assert result["hardware"]["cost_model"] == {
+        "reserved_memory_bias_mb": 0,
+        "peak_activation_bias_mb": 0,
+        "overlap": {
+            "dp_comm_overlap_ratio": 0.0,
+            "tp_comm_overlap_ratio": 0.0,
+            "pp_comm_overlap_ratio": 0.0,
+        },
+    }
+
+
 def test_build_cost_profile_requires_attached_chip_profile(tmp_path):
     from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
 

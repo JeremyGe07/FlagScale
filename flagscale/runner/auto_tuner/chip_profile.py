@@ -59,6 +59,12 @@ def load_chip_profile(profile_path):
     profile = OmegaConf.to_container(OmegaConf.load(resolved_path), resolve=True)
     if not isinstance(profile, dict):
         raise ValueError("Chip profile must be a mapping at the top level.")
+    return normalize_chip_profile(profile)
+
+
+def normalize_chip_profile(profile):
+    if not isinstance(profile, dict):
+        raise ValueError("Chip profile must be a mapping at the top level.")
     return _normalize_chip_profile(profile)
 
 
@@ -69,6 +75,11 @@ def attach_chip_profile(config):
 
     chip_profile_cfg = auto_tuner_cfg.chip_profile
     if "profile" in chip_profile_cfg:
+        chip_profile_cfg.profile = normalize_chip_profile(
+            OmegaConf.to_container(chip_profile_cfg.profile, resolve=True)
+            if OmegaConf.is_config(chip_profile_cfg.profile)
+            else chip_profile_cfg.profile
+        )
         return chip_profile_cfg.profile
     if "path" not in chip_profile_cfg:
         raise ValueError("experiment.auto_tuner.chip_profile.path is required.")
@@ -89,6 +100,11 @@ def get_chip_profile_or_none(config):
     chip_profile_cfg = auto_tuner_cfg.chip_profile
     if "profile" not in chip_profile_cfg:
         return None
+    chip_profile_cfg.profile = normalize_chip_profile(
+        OmegaConf.to_container(chip_profile_cfg.profile, resolve=True)
+        if OmegaConf.is_config(chip_profile_cfg.profile)
+        else chip_profile_cfg.profile
+    )
     return chip_profile_cfg.profile
 
 
