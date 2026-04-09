@@ -1,6 +1,9 @@
 # Placeholder local chip profile for schema validation on the 2xL20 workstation.
 # This file is only used to verify the schema and integration path. It is not a
 # claim about domestic accelerators or a source of final performance conclusions.
+# Keep this checked-in file as the zero-bias baseline. Use
+# `tools/profile_acquisition/profile_acquire.py` to write measured/calibrated
+# variants such as `nvidia_l20.measured.yaml` or `nvidia_l20.calibrated.yaml`.
 
 schema_version: v1alpha1
 
