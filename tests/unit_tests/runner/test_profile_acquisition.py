@@ -262,11 +262,13 @@ def test_profile_acquire_cli_collects_collectives_with_nccl_tests_dir(tmp_path):
             self,
             p2p_command,
             all_reduce_command,
+            runner=None,
             nccl_tests_bin_dir=None,
             ngpus=2,
         ):
             assert p2p_command is None
             assert all_reduce_command is None
+            assert runner == 'nccl_tests'
             assert nccl_tests_bin_dir == '/opt/nccl-tests/build'
             assert ngpus == 2
             return {
@@ -294,6 +296,8 @@ def test_profile_acquire_cli_collects_collectives_with_nccl_tests_dir(tmp_path):
                 '--backend',
                 'nvidia',
                 '--measure-collectives',
+                '--collective-runner',
+                'nccl_tests',
                 '--nccl-tests-bin-dir',
                 '/opt/nccl-tests/build',
             ]

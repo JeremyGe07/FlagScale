@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from flagscale.runner.auto_tuner.profile_acquisition.backends.base import ProfileBackend
@@ -18,6 +19,10 @@ NCCL_TESTS_BIN_DIR_ENV = "NCCL_TESTS_BIN_DIR"
 P2P_BINARY = "p2p_bw"
 ALL_REDUCE_BINARY = "all_reduce_perf"
 NCCL_TABLE_MIN_COLUMNS = 4
+RUNNER_NCCL_TESTS = "nccl_tests"
+RUNNER_TORCH_NCCL = "torch_nccl"
+TORCHRUN_MODULE = "torch.distributed.run"
+TORCH_BENCHMARK_SCRIPT = "measure_collectives_torch.py"
 
 
 class NvidiaProfileBackend(ProfileBackend):
@@ -39,18 +44,23 @@ class NvidiaProfileBackend(ProfileBackend):
         self,
         p2p_command,
         all_reduce_command,
+        runner=None,
         nccl_tests_bin_dir=None,
         ngpus=DEFAULT_TEST_GPUS,
     ):
-        p2p_command = _resolve_collective_command(
+        p2p_command = _build_collective_command(
             command=p2p_command,
             binary_name=P2P_BINARY,
+            collective="p2p",
+            runner=runner,
             nccl_tests_bin_dir=nccl_tests_bin_dir,
             ngpus=ngpus,
         )
-        all_reduce_command = _resolve_collective_command(
+        all_reduce_command = _build_collective_command(
             command=all_reduce_command,
             binary_name=ALL_REDUCE_BINARY,
+            collective="all_reduce",
+            runner=runner,
             nccl_tests_bin_dir=nccl_tests_bin_dir,
             ngpus=ngpus,
         )
@@ -93,7 +103,37 @@ def _parse_key_value_output(output):
     return metrics
 
 
-def _resolve_collective_command(command, binary_name, nccl_tests_bin_dir, ngpus):
+def _build_collective_command(
+    command,
+    binary_name,
+    collective,
+    runner,
+    nccl_tests_bin_dir,
+    ngpus,
+):
+    if runner == RUNNER_TORCH_NCCL:
+        return _build_torchrun_command(collective, ngpus)
+    if runner == RUNNER_NCCL_TESTS:
+        return _resolve_nccl_test_command(command, binary_name, nccl_tests_bin_dir, ngpus)
+    raise ValueError(f"Unknown collective runner: {runner}")
+
+
+def _build_torchrun_command(collective, ngpus):
+    script_path = Path(__file__).resolve().parents[5] / "tools" / "profile_acquisition" / TORCH_BENCHMARK_SCRIPT
+    return [
+        sys.executable,
+        "-m",
+        TORCHRUN_MODULE,
+        "--standalone",
+        "--nnodes=1",
+        f"--nproc_per_node={ngpus}",
+        str(script_path),
+        "--collective",
+        collective,
+    ]
+
+
+def _resolve_nccl_test_command(command, binary_name, nccl_tests_bin_dir, ngpus):
     if command:
         return command
     bin_dir = nccl_tests_bin_dir or os.environ.get(NCCL_TESTS_BIN_DIR_ENV)

@@ -7,6 +7,9 @@ from flagscale.runner.auto_tuner.profile_acquisition import (
 )
 from flagscale.runner.auto_tuner.profile_acquisition.backends import build_backend
 
+RUNNER_NCCL_TESTS = 'nccl_tests'
+RUNNER_TORCH_NCCL = 'torch_nccl'
+
 
 def main(argv=None):
     args = _parse_args(argv)
@@ -26,6 +29,10 @@ def _parse_args(argv):
     parser.add_argument("--fit-memory-bias", action="store_true")
     parser.add_argument("--measure-device-memory", action="store_true")
     parser.add_argument("--measure-collectives", action="store_true")
+    parser.add_argument(
+        "--collective-runner",
+        choices=[RUNNER_NCCL_TESTS, RUNNER_TORCH_NCCL],
+    )
     parser.add_argument("--p2p-command", nargs="+")
     parser.add_argument("--all-reduce-command", nargs="+")
     parser.add_argument("--nccl-tests-bin-dir")
@@ -48,11 +55,30 @@ def _validate_args(args):
         if not args.backend:
             raise ValueError("--backend is required for measurement actions.")
     if args.measure_collectives:
-        has_explicit_commands = args.p2p_command and args.all_reduce_command
-        if not has_explicit_commands and not args.nccl_tests_bin_dir:
-            raise ValueError(
-                "--measure-collectives requires explicit commands or --nccl-tests-bin-dir."
-            )
+        _validate_collective_args(args)
+
+
+def _validate_collective_args(args):
+    if not args.collective_runner:
+        raise ValueError("--collective-runner is required for --measure-collectives.")
+    if args.collective_runner == RUNNER_TORCH_NCCL:
+        _reject_external_collective_args(args)
+        return
+    has_explicit_commands = args.p2p_command and args.all_reduce_command
+    if not has_explicit_commands and not args.nccl_tests_bin_dir:
+        raise ValueError(
+            "--measure-collectives with runner nccl_tests requires "
+            "--nccl-tests-bin-dir or explicit commands."
+        )
+
+
+def _reject_external_collective_args(args):
+    external_args = args.p2p_command or args.all_reduce_command or args.nccl_tests_bin_dir
+    if not external_args:
+        return
+    raise ValueError(
+        "--collective-runner torch_nccl does not accept external collective commands."
+    )
 
 
 def _build_profile_patch(args):
@@ -84,6 +110,7 @@ def _measurement_patch(args):
                 backend.collect_collectives(
                     args.p2p_command,
                     args.all_reduce_command,
+                    runner=args.collective_runner,
                     nccl_tests_bin_dir=args.nccl_tests_bin_dir,
                     ngpus=args.ngpus,
                 )

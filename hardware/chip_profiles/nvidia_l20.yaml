@@ -4,6 +4,8 @@
 # Keep this checked-in file as the zero-bias baseline. Use
 # `tools/profile_acquisition/profile_acquire.py` to write measured/calibrated
 # variants such as `nvidia_l20.measured.yaml` or `nvidia_l20.calibrated.yaml`.
+# Collective fields can now be measured either via external `nccl-tests` or the
+# built-in `--collective-runner torch_nccl` path on this 2xL20 workstation.
 
 schema_version: v1alpha1
 
