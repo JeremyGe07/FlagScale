@@ -101,6 +101,40 @@ def test_recorder_save_serializes_omegaconf_list_values(tmp_path):
     assert "[0.1, 1.0]" in history
 
 
+def test_recorder_record_tolerates_missing_autotuner_platform(monkeypatch, tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "auto_tuner": {},
+            }
+        }
+    )
+    recorder = Recorder(config)
+    strategy = {"idx": 1}
+    task = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
+
+    monkeypatch.setattr(
+        recorder,
+        "get_all_performance_and_host_paths",
+        lambda current_task: (["perf.log"], "host_logs"),
+    )
+    monkeypatch.setattr(recorder, "grep_error", lambda path: set())
+    monkeypatch.setattr(recorder, "grep_max_memory", lambda path: 12.3)
+    monkeypatch.setattr(recorder, "grep_performance", lambda paths, pattern: 45.6)
+    monkeypatch.setattr(
+        recorder,
+        "pass_back_to_platform",
+        lambda current_strategy: pytest.fail("platform callback should not run"),
+    )
+
+    recorder.record(task, strategy)
+
+    assert strategy["performance"] == 45.6
+    assert strategy["max_mem"] == 12.3
+    assert strategy["error"] is None
+
+
 class _DummySearcher:
     def __init__(self, config):
         self.strategies = [{"label": "first"}, {"label": "second"}]

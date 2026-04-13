@@ -73,11 +73,8 @@ class Recorder:
             strategy["error"] = None
 
         # Pass back to platform if need
-        if (
-            "airs_switch" in self.config.experiment.auto_tuner.platform
-            and self.config.experiment.auto_tuner.platform.airs_switch
-            and strategy["performance"]
-        ):
+        platform_cfg = self.config.experiment.auto_tuner.get("platform", {})
+        if platform_cfg.get("airs_switch", False) and strategy["performance"]:
             self.pass_back_to_platform(strategy)
 
     def pass_back_to_platform(self, strategy):
