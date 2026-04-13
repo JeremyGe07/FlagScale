@@ -1,7 +1,9 @@
 import csv
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.profile_acquisition.backends.nvidia import (
@@ -307,3 +309,95 @@ def test_profile_acquire_cli_collects_collectives_with_nccl_tests_dir(tmp_path):
     assert exit_code == 0
     assert measured['interconnect']['intra_node']['p2p_bandwidth_gbps'] == 71.5
     assert measured['interconnect']['intra_node']['all_reduce_latency_us'] == 7.2
+
+
+def test_profile_acquire_cli_runs_dense_template_calibration(tmp_path, capsys):
+    profile_in = tmp_path / 'nvidia_l20.yaml'
+    profile_out = tmp_path / 'nvidia_l20.dense_warmstart.yaml'
+    config_dir = tmp_path / 'conf'
+    config_dir.mkdir()
+    (config_dir / 'train_auto_tuner.yaml').write_text('defaults: []\n')
+    _write_profile_yaml(profile_in)
+
+    summary = SimpleNamespace(
+        template_name='dense-8',
+        sample_count=8,
+        success_count=6,
+        oom_count=1,
+        other_failure_count=1,
+        oom_recall=1.0,
+        false_prune_count=0,
+        reserved_memory_bias_mb=2048.0,
+        peak_activation_bias_mb=512.0,
+    )
+    result = SimpleNamespace(
+        summary=summary,
+        profile_patch={
+            'cost_model.reserved_memory_bias_mb': 2048.0,
+            'cost_model.peak_activation_bias_mb': 512.0,
+        },
+    )
+
+    with (
+        patch(
+            'tools.profile_acquisition.profile_acquire.get_calibration_template',
+            return_value=SimpleNamespace(name='dense-8'),
+        ) as template_mock,
+        patch(
+            'tools.profile_acquisition.profile_acquire.run_calibration',
+            return_value=result,
+        ) as run_mock,
+    ):
+        exit_code = profile_acquire_main(
+            [
+                '--profile-in',
+                str(profile_in),
+                '--profile-out',
+                str(profile_out),
+                '--run-calibration',
+                '--calibration-template',
+                'dense-8',
+                '--config-path',
+                str(config_dir),
+                '--config-name',
+                'train_auto_tuner',
+            ]
+        )
+
+    calibrated = OmegaConf.to_container(OmegaConf.load(profile_out), resolve=True)
+    stdout = capsys.readouterr().out
+    template_mock.assert_called_once_with('dense-8')
+    assert callable(run_mock.call_args.kwargs['execute_task'])
+    assert run_mock.call_args.kwargs['gpu_memory_mb'] == 46000
+    assert exit_code == 0
+    assert calibrated['cost_model']['reserved_memory_bias_mb'] == 2048.0
+    assert calibrated['cost_model']['peak_activation_bias_mb'] == 512.0
+    assert 'Calibration summary:' in stdout
+    assert 'template=dense-8' in stdout
+    assert 'sample_count=8' in stdout
+    assert f'Derived profile path: {profile_out}' in stdout
+
+
+def test_profile_acquire_cli_run_calibration_requires_existing_config_yaml(tmp_path):
+    profile_in = tmp_path / 'nvidia_l20.yaml'
+    profile_out = tmp_path / 'nvidia_l20.dense_warmstart.yaml'
+    config_dir = tmp_path / 'conf'
+    config_dir.mkdir()
+    _write_profile_yaml(profile_in)
+
+    with pytest.raises(ValueError, match='train_auto_tuner.yaml'):
+        profile_acquire_main(
+            [
+                '--profile-in',
+                str(profile_in),
+                '--profile-out',
+                str(profile_out),
+                '--run-calibration',
+                '--calibration-template',
+                'dense-8',
+                '--config-path',
+                str(config_dir),
+                '--config-name',
+                'train_auto_tuner',
+            ]
+        )
