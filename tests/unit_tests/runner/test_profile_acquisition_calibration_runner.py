@@ -7,6 +7,7 @@ from flagscale.runner.auto_tuner.profile_acquisition.calibration_runner import (
     run_calibration,
 )
 from flagscale.runner.auto_tuner.profile_acquisition.models import (
+    ERROR_STATUS,
     OOM_STATUS,
     OTHER_FAILURE_STATUS,
     SUCCESS_STATUS,
@@ -73,7 +74,7 @@ def test_run_calibration_returns_summary_patch_and_records(tmp_path):
             "log_path": str(log_root / "pp2-mbs1.log"),
         },
         "pp2-mbs8": {
-            "status": OTHER_FAILURE_STATUS,
+            "status": ERROR_STATUS,
             "memory_model_mb": 32000.0,
             "max_mem_mb": None,
             "performance_ms": None,
@@ -132,3 +133,31 @@ def test_run_calibration_returns_summary_patch_and_records(tmp_path):
 
     with pytest.raises(FrozenInstanceError):
         result.records[0].status = OOM_STATUS
+
+
+def test_run_calibration_rejects_unknown_status():
+    template = get_calibration_template("dense-8")
+
+    def execute_task(strategy):
+        if strategy.task_name == "dp2-mbs1":
+            return {
+                "status": "mystery",
+                "memory_model_mb": 1000.0,
+                "max_mem_mb": 1200.0,
+                "performance_ms": 10.0,
+                "log_path": "task.log",
+            }
+        return {
+            "status": SUCCESS_STATUS,
+            "memory_model_mb": 1000.0,
+            "max_mem_mb": 1200.0,
+            "performance_ms": 10.0,
+            "log_path": "task.log",
+        }
+
+    with pytest.raises(ValueError, match="mystery"):
+        run_calibration(
+            template=template,
+            execute_task=execute_task,
+            gpu_memory_mb=46000,
+        )

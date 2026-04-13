@@ -21,6 +21,9 @@ from flagscale.runner.auto_tuner.profile_acquisition.templates import (
 )
 
 TaskExecutor = Callable[[CalibrationStrategy], Mapping[str, object]]
+ALLOWED_INPUT_STATUSES = frozenset(
+    {SUCCESS_STATUS, OOM_STATUS, ERROR_STATUS, OTHER_FAILURE_STATUS}
+)
 
 
 def expand_calibration_template(
@@ -91,6 +94,8 @@ def _execute_strategy(
 
 
 def _normalize_status(status: str) -> str:
+    if status not in ALLOWED_INPUT_STATUSES:
+        raise ValueError(f"Unknown calibration task status: {status}")
     if status == ERROR_STATUS:
         return OTHER_FAILURE_STATUS
     return status
