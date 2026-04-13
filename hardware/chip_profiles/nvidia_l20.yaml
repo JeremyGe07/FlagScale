@@ -1,9 +1,15 @@
 # Placeholder local chip profile for schema validation on the 2xL20 workstation.
 # This file is only used to verify the schema and integration path. It is not a
 # claim about domestic accelerators or a source of final performance conclusions.
-# Keep this checked-in file as the zero-bias baseline. Use
-# `tools/profile_acquisition/profile_acquire.py` to write measured/calibrated
-# variants such as `nvidia_l20.measured.yaml` or `nvidia_l20.calibrated.yaml`.
+# Keep this checked-in file as the zero-bias cold-start baseline for autotuner
+# comparisons. Do not silently turn it into a calibrated warm-start profile.
+# Warm-start calibration must write explicit derived profiles through
+# `tools/profile_acquisition/profile_acquire.py`, for example
+# `nvidia_l20.measured.yaml`, `nvidia_l20.calibrated.yaml`,
+# `nvidia_l20.dense_warmstart.yaml`, or `nvidia_l20.moe_warmstart.yaml`.
+# The `dense-8` and `moe-8` names refer to fixed-budget calibration templates
+# that position warm-start bring-up runs; they do not change the role of this
+# checked-in baseline file.
 # Collective fields can now be measured either via external `nccl-tests` or the
 # built-in `--collective-runner torch_nccl` path on this 2xL20 workstation.
 
