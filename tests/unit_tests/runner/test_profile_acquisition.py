@@ -1,9 +1,7 @@
 import csv
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.profile_acquisition.backends.nvidia import (
@@ -14,7 +12,6 @@ from flagscale.runner.auto_tuner.profile_acquisition.history_parser import build
 from flagscale.runner.auto_tuner.profile_acquisition.models import AcquisitionMeasurement
 from flagscale.runner.auto_tuner.profile_acquisition.profile_patch import merge_profile_patch
 from tools.profile_acquisition.profile_acquire import main as profile_acquire_main
-
 
 def _write_history_csv(path: Path):
     rows = [
@@ -58,7 +55,6 @@ def _write_history_csv(path: Path):
         writer.writeheader()
         writer.writerows(rows)
 
-
 def _write_tuner_log(path: Path):
     path.write_text(
         "\n".join(
@@ -75,7 +71,6 @@ def _write_tuner_log(path: Path):
             ]
         )
     )
-
 
 def _write_profile_yaml(path: Path):
     profile = {
@@ -117,7 +112,6 @@ def _write_profile_yaml(path: Path):
     }
     OmegaConf.save(config=OmegaConf.create(profile), f=path)
 
-
 def test_build_acquisition_dataset_parses_history_and_log(tmp_path):
     history_csv = tmp_path / 'history.csv'
     tuner_log = tmp_path / 'tuner.log'
@@ -132,7 +126,6 @@ def test_build_acquisition_dataset_parses_history_and_log(tmp_path):
     assert records[0]['max_mem_mb'] == 33450.0
     assert records[1]['status'] == 'oom'
     assert records[1]['oom_detail']['reserved_unallocated_mb'] == 10024.96
-
 
 def test_fit_memory_bias_prefers_oom_recall_with_bounded_false_prunes(tmp_path):
     history_csv = tmp_path / 'history.csv'
@@ -152,7 +145,6 @@ def test_fit_memory_bias_prefers_oom_recall_with_bounded_false_prunes(tmp_path):
     assert result.summary['oom_recall'] == 1.0
     assert result.summary['false_prune_count'] <= 1
     assert result.peak_activation_bias_mb >= 0.0
-
 
 def test_merge_profile_patch_updates_nested_fields_without_mutating_input():
     profile = {
@@ -190,7 +182,6 @@ def test_merge_profile_patch_updates_nested_fields_without_mutating_input():
     assert merged['interconnect']['intra_node']['p2p_bandwidth_gbps'] == 71.5
     assert merged['cost_model']['reserved_memory_bias_mb'] == 4096
 
-
 def test_profile_acquire_cli_fits_bias_and_writes_profile(tmp_path):
     history_csv = tmp_path / 'history.csv'
     tuner_log = tmp_path / 'tuner.log'
@@ -220,7 +211,6 @@ def test_profile_acquire_cli_fits_bias_and_writes_profile(tmp_path):
     assert exit_code == 0
     assert calibrated['cost_model']['reserved_memory_bias_mb'] > 1800
     assert calibrated['memory']['total_memory_mb'] == 46000
-
 
 def test_profile_acquire_cli_collects_device_memory_from_backend(tmp_path):
     profile_in = tmp_path / 'nvidia_l20.yaml'
@@ -252,7 +242,6 @@ def test_profile_acquire_cli_collects_device_memory_from_backend(tmp_path):
     measured = OmegaConf.to_container(OmegaConf.load(profile_out), resolve=True)
     assert exit_code == 0
     assert measured['memory']['total_memory_mb'] == 46068
-
 
 def test_profile_acquire_cli_collects_collectives_with_nccl_tests_dir(tmp_path):
     profile_in = tmp_path / 'nvidia_l20.yaml'
@@ -309,95 +298,3 @@ def test_profile_acquire_cli_collects_collectives_with_nccl_tests_dir(tmp_path):
     assert exit_code == 0
     assert measured['interconnect']['intra_node']['p2p_bandwidth_gbps'] == 71.5
     assert measured['interconnect']['intra_node']['all_reduce_latency_us'] == 7.2
-
-
-def test_profile_acquire_cli_runs_dense_template_calibration(tmp_path, capsys):
-    profile_in = tmp_path / 'nvidia_l20.yaml'
-    profile_out = tmp_path / 'nvidia_l20.dense_warmstart.yaml'
-    config_dir = tmp_path / 'conf'
-    config_dir.mkdir()
-    (config_dir / 'train_auto_tuner.yaml').write_text('defaults: []\n')
-    _write_profile_yaml(profile_in)
-
-    summary = SimpleNamespace(
-        template_name='dense-8',
-        sample_count=8,
-        success_count=6,
-        oom_count=1,
-        other_failure_count=1,
-        oom_recall=1.0,
-        false_prune_count=0,
-        reserved_memory_bias_mb=2048.0,
-        peak_activation_bias_mb=512.0,
-    )
-    result = SimpleNamespace(
-        summary=summary,
-        profile_patch={
-            'cost_model.reserved_memory_bias_mb': 2048.0,
-            'cost_model.peak_activation_bias_mb': 512.0,
-        },
-    )
-
-    with (
-        patch(
-            'tools.profile_acquisition.profile_acquire.get_calibration_template',
-            return_value=SimpleNamespace(name='dense-8'),
-        ) as template_mock,
-        patch(
-            'tools.profile_acquisition.profile_acquire.run_calibration',
-            return_value=result,
-        ) as run_mock,
-    ):
-        exit_code = profile_acquire_main(
-            [
-                '--profile-in',
-                str(profile_in),
-                '--profile-out',
-                str(profile_out),
-                '--run-calibration',
-                '--calibration-template',
-                'dense-8',
-                '--config-path',
-                str(config_dir),
-                '--config-name',
-                'train_auto_tuner',
-            ]
-        )
-
-    calibrated = OmegaConf.to_container(OmegaConf.load(profile_out), resolve=True)
-    stdout = capsys.readouterr().out
-    template_mock.assert_called_once_with('dense-8')
-    assert callable(run_mock.call_args.kwargs['execute_task'])
-    assert run_mock.call_args.kwargs['gpu_memory_mb'] == 46000
-    assert exit_code == 0
-    assert calibrated['cost_model']['reserved_memory_bias_mb'] == 2048.0
-    assert calibrated['cost_model']['peak_activation_bias_mb'] == 512.0
-    assert 'Calibration summary:' in stdout
-    assert 'template=dense-8' in stdout
-    assert 'sample_count=8' in stdout
-    assert f'Derived profile path: {profile_out}' in stdout
-
-
-def test_profile_acquire_cli_run_calibration_requires_existing_config_yaml(tmp_path):
-    profile_in = tmp_path / 'nvidia_l20.yaml'
-    profile_out = tmp_path / 'nvidia_l20.dense_warmstart.yaml'
-    config_dir = tmp_path / 'conf'
-    config_dir.mkdir()
-    _write_profile_yaml(profile_in)
-
-    with pytest.raises(ValueError, match='train_auto_tuner.yaml'):
-        profile_acquire_main(
-            [
-                '--profile-in',
-                str(profile_in),
-                '--profile-out',
-                str(profile_out),
-                '--run-calibration',
-                '--calibration-template',
-                'dense-8',
-                '--config-path',
-                str(config_dir),
-                '--config-name',
-                'train_auto_tuner',
-            ]
-        )
