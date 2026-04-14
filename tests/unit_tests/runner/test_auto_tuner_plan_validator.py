@@ -66,76 +66,122 @@ def _build_stage_executable_plan(**overrides):
     return ModelPlan(**plan_kwargs)
 
 
+def _build_analysis_only_plan(**overrides):
+    _, ModelPlan, _, _, _ = _load_plan_validator_types()
+    plan_kwargs = {
+        "total_layers": 6,
+        "contract": _contract(),
+        "stages": (
+            _stage(0, (_segment(0, 1), _segment(2, 3))),
+            _stage(1, (_segment(4, 5),)),
+        ),
+    }
+    plan_kwargs.update(overrides)
+    return ModelPlan(**plan_kwargs)
+
+
 def test_validate_model_plan_accepts_stage_executable_plan():
     result = _validate(_build_stage_executable_plan())
 
-    assert result.is_valid is True
     assert result.runtime_mode == "stage-executable"
-    assert result.errors == ()
 
 
-def test_validate_model_plan_marks_multi_segment_stage_as_analysis_only():
-    _, ModelPlan, _, _, _ = _load_plan_validator_types()
-    plan = ModelPlan(
-        total_layers=4,
-        stages=(_stage(0, (_segment(0, 1), _segment(2, 3))),),
-        contract=_contract(),
-    )
+def test_validate_model_plan_accepts_analysis_only_plan():
+    result = _validate(_build_analysis_only_plan())
 
-    result = _validate(plan)
-
-    assert result.is_valid is True
     assert result.runtime_mode == "analysis-only"
-    assert result.errors == ()
+
+
+@pytest.mark.parametrize(
+    ("plan", "message"),
+    [
+        (
+            _build_analysis_only_plan(
+                stages=(
+                    _stage(0, (_segment(0, 1), _segment(4, 5))),
+                    _stage(1, (_segment(2, 3),)),
+                )
+            ),
+            "stage 0.*gap",
+        ),
+        (
+            _build_analysis_only_plan(
+                stages=(
+                    _stage(0, (_segment(0, 2), _segment(2, 3))),
+                    _stage(1, (_segment(4, 5),)),
+                )
+            ),
+            "stage 0.*overlap",
+        ),
+        (
+            _build_analysis_only_plan(
+                total_layers=5,
+                stages=(
+                    _stage(0, (_segment(0, 1),)),
+                    _stage(1, (_segment(2, 5),)),
+                ),
+            ),
+            "out of bounds",
+        ),
+    ],
+)
+def test_validate_model_plan_rejects_invalid_global_stage_coverage(plan, message):
+    with pytest.raises(ValueError, match=message):
+        _validate(plan)
 
 
 @pytest.mark.parametrize(
     ("segments", "message"),
     [
-        ((_segment(0, 0), _segment(2, 3)), "gap"),
-        ((_segment(0, 2), _segment(2, 3)), "overlap"),
-        ((_segment(0, 4),), "out of bounds"),
+        ((_segment(0, 1), _segment(3, 4)), "stage 0.*gap"),
+        ((_segment(0, 2), _segment(2, 3)), "stage 0.*overlap"),
+        ((_segment(2, 3), _segment(0, 1)), "stage 0.*order"),
     ],
 )
-def test_validate_model_plan_rejects_invalid_layer_spans(segments, message):
+def test_validate_model_plan_rejects_invalid_per_stage_segment_coverage(segments, message):
     _, ModelPlan, _, _, _ = _load_plan_validator_types()
     plan = ModelPlan(
-        total_layers=4,
-        stages=(_stage(0, segments),),
+        total_layers=6,
         contract=_contract(),
+        stages=(
+            _stage(0, segments),
+            _stage(1, (_segment(4, 5),)),
+        ),
     )
 
-    result = _validate(plan)
-
-    assert result.is_valid is False
-    assert any(message in error for error in result.errors)
+    with pytest.raises(ValueError, match=message):
+        _validate(plan)
 
 
 def test_validate_model_plan_rejects_non_positive_parallelism():
     plan = _build_stage_executable_plan(
         stages=(
-            _stage(
-                0,
-                (_segment(0, 1, data_parallel_size=0),),
-                device_group=(0, 1),
-            ),
+            _stage(0, (_segment(0, 1, data_parallel_size=0),), device_group=(0, 1)),
             _stage(1, (_segment(2, 3),), device_group=(2, 3)),
         )
     )
 
-    result = _validate(plan)
-
-    assert result.is_valid is False
-    assert any("positive" in error for error in result.errors)
+    with pytest.raises(ValueError, match="positive"):
+        _validate(plan)
 
 
 def test_validate_model_plan_rejects_global_batch_size_mismatch():
     plan = _build_stage_executable_plan(contract=_contract(gbs=8))
 
-    result = _validate(plan)
+    with pytest.raises(ValueError, match="global batch size"):
+        _validate(plan)
 
-    assert result.is_valid is False
-    assert any("global batch size" in error for error in result.errors)
+
+def test_validate_model_plan_rejects_missing_data_parallel_size_for_gbs_check():
+    plan = _build_stage_executable_plan(
+        stages=(
+            _stage(0, (_segment(0, 1, data_parallel_size=None, dp=None),), device_group=(0, 1)),
+            _stage(1, (_segment(2, 3),), device_group=(2, 3)),
+        )
+    )
+
+    with pytest.raises(ValueError, match="data_parallel_size"):
+        _validate(plan)
 
 
 @pytest.mark.parametrize(
@@ -174,8 +220,29 @@ def test_validate_model_plan_rejects_global_batch_size_mismatch():
 def test_validate_model_plan_rejects_invalid_runtime_device_groups(stages, message):
     plan = _build_stage_executable_plan(stages=stages)
 
-    result = _validate(plan)
+    with pytest.raises(ValueError, match=message):
+        _validate(plan)
 
-    assert result.is_valid is False
-    assert result.runtime_mode == "stage-executable"
-    assert any(message in error for error in result.errors)
+
+def test_validate_model_plan_rejects_pipeline_stage_count_mismatch():
+    plan = _build_stage_executable_plan(
+        stages=(
+            _stage(0, (_segment(0, 1, pipeline_model_parallel_size=3),), device_group=(0, 1)),
+            _stage(1, (_segment(2, 3, pipeline_model_parallel_size=3),), device_group=(2, 3)),
+        )
+    )
+
+    with pytest.raises(ValueError, match="pipeline_model_parallel_size"):
+        _validate(plan)
+
+
+def test_validate_model_plan_rejects_parallelism_that_exceeds_stage_device_group():
+    plan = _build_stage_executable_plan(
+        stages=(
+            _stage(0, (_segment(0, 1, tensor_model_parallel_size=8),), device_group=(0, 1)),
+            _stage(1, (_segment(2, 3),), device_group=(2, 3)),
+        )
+    )
+
+    with pytest.raises(ValueError, match="device_group"):
+        _validate(plan)
