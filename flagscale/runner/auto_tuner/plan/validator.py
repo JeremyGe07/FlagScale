@@ -26,6 +26,7 @@ def validate_model_plan(plan: ModelPlan) -> PlanValidationResult:
     _validate_global_coverage(plan)
     _validate_parallelism(plan)
     _validate_global_batch_size(plan)
+    _validate_explicit_device_groups(plan)
     if runtime_mode == STAGE_EXECUTABLE:
         _validate_stage_executable_constraints(plan)
     return PlanValidationResult(runtime_mode=runtime_mode)
@@ -123,7 +124,7 @@ def _validate_global_batch_size(plan: ModelPlan) -> None:
 
 
 def _validate_stage_executable_constraints(plan: ModelPlan) -> None:
-    _validate_stage_device_groups(plan)
+    used_ranks = _validate_required_stage_device_groups(plan)
     for stage in plan.stages:
         segment = stage.segments[0]
         pp_size = _strategy_int(segment.strategy, ("pipeline_model_parallel_size", "pp"))
@@ -134,28 +135,38 @@ def _validate_stage_executable_constraints(plan: ModelPlan) -> None:
             raise ValueError(
                 f"stage {stage.stage_id} device_group is too small for tensor/context/expert parallelism"
             )
+    if plan.contract is not None and len(used_ranks) != plan.contract.world_size:
+        raise ValueError("device_group union size must equal contract world_size")
 
 
-def _validate_stage_device_groups(plan: ModelPlan) -> None:
+def _validate_explicit_device_groups(plan: ModelPlan) -> None:
     used_ranks: set[int] = set()
     for stage in plan.stages:
         if not stage.device_group:
-            raise ValueError(f"stage {stage.stage_id} device_group must be non-empty")
+            continue
         if len(set(stage.device_group)) != len(stage.device_group):
             raise ValueError(f"stage {stage.stage_id} device_group contains duplicate ranks")
         overlap = used_ranks.intersection(stage.device_group)
         if overlap:
             raise ValueError(f"stage {stage.stage_id} device_group overlap across stages: {sorted(overlap)}")
         used_ranks.update(stage.device_group)
-    if plan.contract is not None and len(used_ranks) != plan.contract.world_size:
-        raise ValueError("device_group union size must equal contract world_size")
+
+
+def _validate_required_stage_device_groups(plan: ModelPlan) -> set[int]:
+    used_ranks: set[int] = set()
+    for stage in plan.stages:
+        if not stage.device_group:
+            raise ValueError(f"stage {stage.stage_id} device_group must be non-empty")
+        used_ranks.update(stage.device_group)
+    return used_ranks
 
 
 def _required_parallel_ranks(strategy: dict[str, object]) -> int:
+    dp_size = _required_strategy_int(strategy, ("data_parallel_size", "dp"))
     tp_size = _required_strategy_int(strategy, ("tensor_model_parallel_size", "tp"))
     cp_size = _required_strategy_int(strategy, ("context_parallel_size", "cp"))
     ep_size = _required_strategy_int(strategy, ("expert_model_parallel_size", "ep"))
-    return tp_size * cp_size * ep_size
+    return dp_size * tp_size * cp_size * ep_size
 
 
 def _required_strategy_int(strategy: dict[str, object], keys: tuple[str, ...]) -> int:

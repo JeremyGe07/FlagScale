@@ -92,6 +92,19 @@ def test_validate_model_plan_accepts_analysis_only_plan():
     assert result.runtime_mode == "analysis-only"
 
 
+def test_validate_model_plan_accepts_analysis_only_plan_with_valid_explicit_device_groups():
+    plan = _build_analysis_only_plan(
+        stages=(
+            _stage(0, (_segment(0, 1), _segment(2, 3)), device_group=(0, 1)),
+            _stage(1, (_segment(4, 5),), device_group=(2, 3)),
+        )
+    )
+
+    result = _validate(plan)
+
+    assert result.runtime_mode == "analysis-only"
+
+
 @pytest.mark.parametrize(
     ("plan", "message"),
     [
@@ -211,14 +224,15 @@ def test_validate_model_plan_rejects_missing_data_parallel_size_for_gbs_check():
         (
             (
                 _stage(0, (_segment(0, 1),), device_group=(0, 1)),
-                _stage(1, (_segment(2, 3),), device_group=(2,)),
+                _stage(1, (_segment(2, 3),), device_group=(2, 3)),
             ),
             "world_size",
         ),
     ],
 )
 def test_validate_model_plan_rejects_invalid_runtime_device_groups(stages, message):
-    plan = _build_stage_executable_plan(stages=stages)
+    contract = _contract(world_size=5) if message == "world_size" else _contract()
+    plan = _build_stage_executable_plan(stages=stages, contract=contract)
 
     with pytest.raises(ValueError, match=message):
         _validate(plan)
@@ -245,4 +259,43 @@ def test_validate_model_plan_rejects_parallelism_that_exceeds_stage_device_group
     )
 
     with pytest.raises(ValueError, match="device_group"):
+        _validate(plan)
+
+
+def test_validate_model_plan_rejects_data_parallelism_that_exceeds_stage_device_group():
+    plan = _build_stage_executable_plan(
+        stages=(
+            _stage(0, (_segment(0, 1, data_parallel_size=2),), device_group=(0,)),
+            _stage(1, (_segment(2, 3, data_parallel_size=2),), device_group=(1, 2, 3)),
+        ),
+        contract=_contract(world_size=4),
+    )
+
+    with pytest.raises(ValueError, match="device_group"):
+        _validate(plan)
+
+
+@pytest.mark.parametrize(
+    ("stages", "message"),
+    [
+        (
+            (
+                _stage(0, (_segment(0, 1), _segment(2, 3)), device_group=(0, 0)),
+                _stage(1, (_segment(4, 5),), device_group=(2, 3)),
+            ),
+            "duplicate",
+        ),
+        (
+            (
+                _stage(0, (_segment(0, 1), _segment(2, 3)), device_group=(0, 1)),
+                _stage(1, (_segment(4, 5),), device_group=(1, 2)),
+            ),
+            "overlap",
+        ),
+    ],
+)
+def test_validate_model_plan_rejects_invalid_explicit_device_groups_in_analysis_only(stages, message):
+    plan = _build_analysis_only_plan(stages=stages)
+
+    with pytest.raises(ValueError, match=message):
         _validate(plan)
