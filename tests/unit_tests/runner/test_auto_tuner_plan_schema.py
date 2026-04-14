@@ -6,11 +6,46 @@ import types
 import pytest
 
 
+def _restore_modules(previous_modules):
+    ordered_names = sorted(previous_modules, key=lambda name: name.count("."))
+
+    for name in ordered_names:
+        module = previous_modules[name]
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+        parent_name, _, child_name = name.rpartition(".")
+        if not parent_name:
+            continue
+
+        parent_module = sys.modules.get(parent_name)
+        if parent_module is None:
+            continue
+
+        if module is None:
+            if hasattr(parent_module, child_name):
+                delattr(parent_module, child_name)
+            continue
+
+        setattr(parent_module, child_name, module)
+
+
 def _import_plan_module():
-    sys.modules.pop("flagscale.runner.auto_tuner.plan", None)
-    sys.modules.pop("flagscale.runner.auto_tuner", None)
-    sys.modules.pop("flagscale.runner.auto_tuner.tuner", None)
-    return importlib.import_module("flagscale.runner.auto_tuner.plan")
+    module_names = (
+        "flagscale.runner.auto_tuner.plan",
+        "flagscale.runner.auto_tuner",
+        "flagscale.runner.auto_tuner.tuner",
+    )
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
+
+    try:
+        for name in module_names:
+            sys.modules.pop(name, None)
+        return importlib.import_module("flagscale.runner.auto_tuner.plan")
+    finally:
+        _restore_modules(previous_modules)
 
 
 def _load_plan_types():
@@ -25,14 +60,38 @@ def _load_plan_types():
 
 
 def _import_auto_tuner_module():
-    sys.modules.pop("flagscale.runner.auto_tuner", None)
-    return importlib.import_module("flagscale.runner.auto_tuner")
+    module_name = "flagscale.runner.auto_tuner"
+    previous_modules = {module_name: sys.modules.get(module_name)}
+
+    try:
+        sys.modules.pop(module_name, None)
+        return importlib.import_module(module_name)
+    finally:
+        _restore_modules(previous_modules)
 
 
 def test_importing_plan_module_does_not_load_tuner():
+    module_names = (
+        "flagscale.runner.auto_tuner",
+        "flagscale.runner.auto_tuner.tuner",
+    )
+    previous_modules = {name: sys.modules.get(name) for name in module_names}
+
+    try:
+        sys.modules.pop("flagscale.runner.auto_tuner.tuner", None)
+        _import_plan_module()
+        assert "flagscale.runner.auto_tuner.tuner" not in sys.modules
+    finally:
+        _restore_modules(previous_modules)
+
+
+def test_import_plan_module_restores_existing_tuner_module():
+    importlib.import_module("flagscale.runner.auto_tuner")
+    original_tuner_module = importlib.import_module("flagscale.runner.auto_tuner.tuner")
+
     _import_plan_module()
 
-    assert "flagscale.runner.auto_tuner.tuner" not in sys.modules
+    assert sys.modules["flagscale.runner.auto_tuner.tuner"] is original_tuner_module
 
 
 def test_auto_tuner_dir_does_not_duplicate_lazy_exports(monkeypatch):
@@ -50,22 +109,33 @@ def test_auto_tuner_dir_does_not_duplicate_lazy_exports(monkeypatch):
 
 
 def test_from_auto_tuner_imports_lazy_exports(monkeypatch):
+    previous_modules = {
+        name: sys.modules.get(name)
+        for name in (
+            "flagscale.runner.auto_tuner",
+            "flagscale.runner.auto_tuner.tuner",
+        )
+    }
     tuner_module = types.ModuleType("flagscale.runner.auto_tuner.tuner")
     auto_tuner = object()
     serve_auto_tunner = object()
     tuner_module.AutoTuner = auto_tuner
     tuner_module.ServeAutoTunner = serve_auto_tunner
     monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.tuner", tuner_module)
-    sys.modules.pop("flagscale.runner.auto_tuner", None)
 
-    namespace: dict[str, object] = {}
-    exec(
-        "from flagscale.runner.auto_tuner import AutoTuner, ServeAutoTunner",
-        namespace,
-    )
+    try:
+        sys.modules.pop("flagscale.runner.auto_tuner", None)
 
-    assert namespace["AutoTuner"] is auto_tuner
-    assert namespace["ServeAutoTunner"] is serve_auto_tunner
+        namespace: dict[str, object] = {}
+        exec(
+            "from flagscale.runner.auto_tuner import AutoTuner, ServeAutoTunner",
+            namespace,
+        )
+
+        assert namespace["AutoTuner"] is auto_tuner
+        assert namespace["ServeAutoTunner"] is serve_auto_tunner
+    finally:
+        _restore_modules(previous_modules)
 
 
 def test_model_plan_accepts_multi_segment_stage():
