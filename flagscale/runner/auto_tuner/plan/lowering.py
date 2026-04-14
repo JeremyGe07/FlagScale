@@ -4,6 +4,7 @@ from flagscale.runner.auto_tuner.plan.schema import (
     SegmentPlan,
     StagePlan,
 )
+from flagscale.runner.auto_tuner.plan.summary import summarize_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
@@ -34,33 +35,6 @@ def lower_strategy_to_plan(strategy, config) -> ModelPlan:
     )
     validate_model_plan(plan)
     return plan
-
-
-def summarize_plan(plan: ModelPlan) -> dict[str, object]:
-    return {
-        "total_layers": plan.total_layers,
-        "stage_count": len(plan.stages),
-        "vpp_stage_segment_counts": [len(stage.segments) for stage in plan.stages],
-        "contract": {
-            "world_size": None if plan.contract is None else plan.contract.world_size,
-            "micro_batch_size": None if plan.contract is None else plan.contract.micro_batch_size,
-            "gradient_accumulation_steps": (
-                None if plan.contract is None else plan.contract.gradient_accumulation_steps
-            ),
-            "global_batch_size": None if plan.contract is None else plan.contract.global_batch_size,
-        },
-        "stages": [
-            {
-                "stage_id": stage.stage_id,
-                "device_group": list(stage.device_group),
-                "segments": [
-                    {"start": segment.start, "end": segment.end} for segment in stage.segments
-                ],
-            }
-            for stage in plan.stages
-        ],
-    }
-
 
 def _resolve_world_size(config) -> int:
     auto_tuner = config.experiment.auto_tuner

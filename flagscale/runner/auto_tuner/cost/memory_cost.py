@@ -2,6 +2,8 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 from flagscale.runner.auto_tuner.chip_profile import get_chip_profile_or_none
+from flagscale.runner.auto_tuner.plan.schema import ModelPlan
+from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy
 from flagscale.runner.auto_tuner.utils import normalize_moe_layer_freq
 from flagscale.train.theoretical_memory_usage import (
     NUM_BYTES_IN_MEGABYTE,
@@ -23,6 +25,12 @@ SHARDED_MODEL_STATE_GRAD_FACTOR = 12.0
 
 
 def estimate_memory_cost(strategy, config):
+    if isinstance(strategy, ModelPlan):
+        return _estimate_plan_memory_cost(strategy, config)
+    return _estimate_strategy_memory_cost(strategy, config)
+
+
+def _estimate_strategy_memory_cost(strategy, config):
     args = _build_memory_args(config, strategy)
     num_microbatches = _get_num_microbatches(strategy, config)
     base_total_mb = float(report_theoretical_memory(args, num_microbatches=num_microbatches))
@@ -44,6 +52,80 @@ def estimate_memory_cost(strategy, config):
         "memory_total_mb": peak_mb + reserved_mb,
         "memory_breakdown": breakdown,
     }
+
+
+def _estimate_plan_memory_cost(plan, config):
+    plan_breakdown = _build_plan_memory_breakdown(plan, config)
+    strategy = extract_homogeneous_strategy(plan)
+    if strategy is not None:
+        result = _estimate_strategy_memory_cost(strategy, config)
+        result["memory_breakdown"]["plan"] = plan_breakdown
+        return result
+    memory_total_mb = plan_breakdown["peak_stage_memory_total_mb"]
+    breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
+    breakdown["peak_mb"] = memory_total_mb
+    breakdown["activations_mb"] = memory_total_mb
+    breakdown["plan"] = plan_breakdown
+    return {"memory_total_mb": memory_total_mb, "memory_breakdown": breakdown}
+
+
+def _build_plan_memory_breakdown(plan, config):
+    stages = [_build_stage_memory(stage, config) for stage in plan.stages]
+    peak_stage = max(stages, key=lambda stage: stage["memory_total_mb"], default=None)
+    return {
+        "stages": stages,
+        "peak_stage_id": None if peak_stage is None else peak_stage["stage_id"],
+        "peak_stage_memory_total_mb": (
+            0.0 if peak_stage is None else peak_stage["memory_total_mb"]
+        ),
+    }
+
+
+def _build_stage_memory(stage, config):
+    segments = [_build_segment_memory(segment, config) for segment in stage.segments]
+    memory_total_mb = max(
+        (segment["memory_total_mb"] for segment in segments),
+        default=0.0,
+    )
+    return {
+        "stage_id": stage.stage_id,
+        "device_group": list(stage.device_group),
+        "memory_total_mb": memory_total_mb,
+        "segments": segments,
+    }
+
+
+def _build_segment_memory(segment, config):
+    layer_count = segment.end - segment.start + 1
+    strategy = _segment_strategy(segment.strategy, layer_count)
+    cost = _estimate_strategy_memory_cost(strategy, _config_with_num_layers(config, layer_count))
+    return {
+        "start": segment.start,
+        "end": segment.end,
+        "layer_count": layer_count,
+        "memory_total_mb": cost["memory_total_mb"],
+        "memory_breakdown": cost["memory_breakdown"],
+    }
+
+
+def _config_with_num_layers(config, num_layers):
+    segment_config = deepcopy(config)
+    segment_config.train.model.num_layers = num_layers
+    return segment_config
+
+
+def _segment_strategy(strategy, num_layers):
+    segment_strategy = dict(strategy)
+    segment_strategy["pipeline_model_parallel_size"] = 1
+    segment_strategy["num_layers_per_virtual_pipeline_stage"] = None
+    segment_strategy["decoder_first_pipeline_num_layers"] = None
+    segment_strategy["decoder_last_pipeline_num_layers"] = None
+    if segment_strategy.get("recompute_num_layers") is not None:
+        segment_strategy["recompute_num_layers"] = min(
+            segment_strategy["recompute_num_layers"],
+            num_layers,
+        )
+    return segment_strategy
 
 
 def _get_num_microbatches(strategy, config):

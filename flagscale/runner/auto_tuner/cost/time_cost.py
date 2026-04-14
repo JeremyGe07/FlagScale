@@ -2,6 +2,8 @@ from copy import deepcopy
 from math import log2
 
 from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+from flagscale.runner.auto_tuner.plan.schema import ModelPlan
+from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy
 
 BF16_BYTES = 2.0
 BITS_PER_BYTE = 8.0
@@ -38,6 +40,12 @@ DEFAULT_TIME_BREAKDOWN = {
 
 
 def estimate_time_cost(strategy, config):
+    if isinstance(strategy, ModelPlan):
+        return _estimate_plan_time_cost(strategy, config)
+    return _estimate_strategy_time_cost(strategy, config)
+
+
+def _estimate_strategy_time_cost(strategy, config):
     profile = build_cost_profile(config, strategy)
     breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
     compute_ms = _estimate_compute_ms(profile)
@@ -54,6 +62,98 @@ def estimate_time_cost(strategy, config):
     breakdown["expert_comm_ms"] = _estimate_expert_comm_ms(profile)
     breakdown["recompute_ms"] = _estimate_recompute_ms(profile, compute_ms)
     return {"time_total_ms": sum(breakdown.values()), "time_breakdown": breakdown}
+
+
+def _estimate_plan_time_cost(plan, config):
+    plan_breakdown = _build_plan_time_breakdown(plan, config)
+    strategy = extract_homogeneous_strategy(plan)
+    if strategy is not None:
+        result = _estimate_strategy_time_cost(strategy, config)
+        result["time_breakdown"]["plan"] = plan_breakdown
+        return result
+    breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
+    for stage in plan_breakdown["stages"]:
+        _accumulate_breakdown(breakdown, stage["time_breakdown"])
+    breakdown["pp_comm_ms"] = sum(item["time_ms"] for item in plan_breakdown["transitions"])
+    time_total_ms = sum(breakdown.values())
+    breakdown["plan"] = plan_breakdown
+    return {"time_total_ms": time_total_ms, "time_breakdown": breakdown}
+
+
+def _build_plan_time_breakdown(plan, config):
+    stages = [_build_stage_time(stage, config) for stage in plan.stages]
+    transitions = _build_transition_breakdown(plan, config)
+    return {"stages": stages, "transitions": transitions}
+
+
+def _build_stage_time(stage, config):
+    segments = [_build_segment_time(segment, config) for segment in stage.segments]
+    breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
+    for segment in segments:
+        _accumulate_breakdown(breakdown, segment["time_breakdown"])
+    return {
+        "stage_id": stage.stage_id,
+        "device_group": list(stage.device_group),
+        "time_total_ms": sum(segment["time_total_ms"] for segment in segments),
+        "time_breakdown": breakdown,
+        "segments": segments,
+    }
+
+
+def _build_segment_time(segment, config):
+    layer_count = segment.end - segment.start + 1
+    cost = _estimate_strategy_time_cost(
+        _segment_strategy(segment.strategy, layer_count),
+        _config_with_num_layers(config, layer_count),
+    )
+    return {
+        "start": segment.start,
+        "end": segment.end,
+        "layer_count": layer_count,
+        "time_total_ms": cost["time_total_ms"],
+        "time_breakdown": cost["time_breakdown"],
+    }
+
+
+def _build_transition_breakdown(plan, config):
+    if len(plan.stages) < 2:
+        return []
+    strategy = dict(plan.stages[0].segments[0].strategy)
+    total_pp_comm_ms = _estimate_strategy_time_cost(strategy, config)["time_breakdown"]["pp_comm_ms"]
+    transition_ms = total_pp_comm_ms / (len(plan.stages) - 1)
+    return [
+        {
+            "source_stage_id": index,
+            "target_stage_id": index + 1,
+            "time_ms": transition_ms,
+        }
+        for index in range(len(plan.stages) - 1)
+    ]
+
+
+def _accumulate_breakdown(target, source):
+    for key in DEFAULT_TIME_BREAKDOWN:
+        target[key] += source[key]
+
+
+def _config_with_num_layers(config, num_layers):
+    segment_config = deepcopy(config)
+    segment_config.train.model.num_layers = num_layers
+    return segment_config
+
+
+def _segment_strategy(strategy, num_layers):
+    segment_strategy = dict(strategy)
+    segment_strategy["pipeline_model_parallel_size"] = 1
+    segment_strategy["num_layers_per_virtual_pipeline_stage"] = None
+    segment_strategy["decoder_first_pipeline_num_layers"] = None
+    segment_strategy["decoder_last_pipeline_num_layers"] = None
+    if segment_strategy.get("recompute_num_layers") is not None:
+        segment_strategy["recompute_num_layers"] = min(
+            segment_strategy["recompute_num_layers"],
+            num_layers,
+        )
+    return segment_strategy
 
 
 def _estimate_compute_ms(profile):

@@ -6,6 +6,11 @@ from flagscale.runner.auto_tuner.chip_profile import (
     load_chip_profile,
     normalize_chip_profile,
 )
+from flagscale.runner.auto_tuner.plan.schema import ModelPlan
+from flagscale.runner.auto_tuner.plan.summary import (
+    extract_homogeneous_strategy,
+    summarize_plan,
+)
 from flagscale.runner.auto_tuner.utils import normalize_moe_layer_freq
 
 REQUIRED_MODEL_FIELDS = (
@@ -43,11 +48,11 @@ REQUIRED_STRATEGY_FIELDS = (
 
 def build_cost_profile(config, strategy):
     config_dict = _to_plain_mapping(config, "config")
-    strategy_dict = _to_plain_mapping(strategy, "strategy")
     profile = _resolve_chip_profile(config_dict)
+    runtime_profile = _build_runtime_profile(config_dict, strategy)
     return {
         "hardware": _build_hardware_profile(profile),
-        "runtime": _build_runtime_profile(config_dict, strategy_dict),
+        "runtime": runtime_profile,
         "model": _build_model_profile(config_dict),
     }
 
@@ -74,6 +79,21 @@ def _build_hardware_profile(profile):
 
 
 def _build_runtime_profile(config, strategy):
+    runtime_profile = _build_runtime_base(config)
+    if isinstance(strategy, ModelPlan):
+        runtime_profile["plan"] = summarize_plan(strategy)
+        compatible_strategy = extract_homogeneous_strategy(strategy)
+        if compatible_strategy is not None:
+            runtime_profile["strategy"] = _build_strategy_profile(
+                compatible_strategy, "plan.strategy"
+            )
+        return runtime_profile
+    strategy_dict = _to_plain_mapping(strategy, "strategy")
+    runtime_profile["strategy"] = _build_strategy_profile(strategy_dict, "strategy")
+    return runtime_profile
+
+
+def _build_runtime_base(config):
     experiment = _require_mapping(config, "experiment", "config")
     runner = _require_mapping(experiment, "runner", "config.experiment")
     auto_tuner = _require_mapping(experiment, "auto_tuner", "config.experiment")
@@ -111,11 +131,11 @@ def _build_runtime_profile(config, strategy):
         "nnodes": nnodes,
         "nproc_per_node": nproc_per_node,
         "world_size": world_size,
-        "strategy": {
-            field: _require_field(strategy, field, "strategy")
-            for field in REQUIRED_STRATEGY_FIELDS
-        },
     }
+
+
+def _build_strategy_profile(strategy, path):
+    return {field: _require_field(strategy, field, path) for field in REQUIRED_STRATEGY_FIELDS}
 
 
 def _build_model_profile(config):
