@@ -40,9 +40,11 @@ class SegmentPlan:
 class StagePlan:
     stage_id: int
     segments: tuple[SegmentPlan, ...]
+    device_group: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "segments", _freeze_tuple(self.segments))
+        object.__setattr__(self, "device_group", _freeze_tuple(self.device_group))
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class ExecutionContract:
     world_size: int
     micro_batch_size: int
     gradient_accumulation_steps: int
+    global_batch_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class ModelPlan:
     stages: tuple[StagePlan, ...]
     transitions: tuple[TransitionPlan, ...] = ()
     contract: ExecutionContract | None = None
+    total_layers: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stages", _freeze_tuple(self.stages))
