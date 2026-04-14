@@ -2,6 +2,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 from flagscale.runner.auto_tuner.chip_profile import get_chip_profile_or_none
+from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy
 from flagscale.runner.auto_tuner.utils import normalize_moe_layer_freq
@@ -25,9 +26,12 @@ SHARDED_MODEL_STATE_GRAD_FACTOR = 12.0
 
 
 def estimate_memory_cost(strategy, config):
-    if isinstance(strategy, ModelPlan):
-        return _estimate_plan_memory_cost(strategy, config)
-    return _estimate_strategy_memory_cost(strategy, config)
+    plan = (
+        strategy
+        if isinstance(strategy, ModelPlan)
+        else lower_strategy_to_plan(strategy, config, validate=False)
+    )
+    return _estimate_plan_memory_cost(plan, config)
 
 
 def _estimate_strategy_memory_cost(strategy, config):
@@ -61,10 +65,7 @@ def _estimate_plan_memory_cost(plan, config):
         result["memory_breakdown"]["plan"] = _build_plan_memory_breakdown(plan, config)
         return result
     plan_breakdown = _build_plan_memory_breakdown(plan, config)
-    memory_total_mb = (
-        plan_breakdown["peak_stage_memory_total_mb"]
-        + plan_breakdown["peak_transition_memory_mb"]
-    )
+    memory_total_mb = plan_breakdown["peak_combined_memory_total_mb"]
     breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
     breakdown["peak_mb"] = memory_total_mb
     breakdown["activations_mb"] = memory_total_mb
@@ -81,6 +82,14 @@ def _build_plan_memory_breakdown(plan, config):
         key=lambda transition: transition["memory_mb"],
         default=None,
     )
+    peak_combined = max(
+        (
+            stage["memory_total_mb"]
+            + _attached_transition_peak_mb(stage["stage_id"], transitions)
+            for stage in stages
+        ),
+        default=0.0,
+    )
     return {
         "stages": stages,
         "transitions": transitions,
@@ -91,6 +100,7 @@ def _build_plan_memory_breakdown(plan, config):
         "peak_transition_memory_mb": (
             0.0 if peak_transition is None else peak_transition["memory_mb"]
         ),
+        "peak_combined_memory_total_mb": peak_combined,
     }
 
 
@@ -156,6 +166,8 @@ def _estimate_transition_memory(spec, config):
     return {
         "source_stage_id": spec["source_stage_id"],
         "target_stage_id": spec["target_stage_id"],
+        "source_segment_index": spec["source_segment_index"],
+        "target_segment_index": spec["target_segment_index"],
         "kind": spec["kind"],
         "metadata": dict(spec["metadata"]),
         "memory_mb": max(source_mb, target_mb) * factor,
@@ -186,34 +198,43 @@ def _transition_factor(spec):
 
 
 def _plan_transition_specs(plan):
-    if plan.transitions:
-        return [
-            _transition_spec_from_plan(plan, transition) for transition in plan.transitions
-        ]
-    return _default_transition_specs(plan)
+    specs = _default_transition_specs(plan)
+    for transition in plan.transitions:
+        _merge_transition_spec(specs, _transition_spec_from_plan(plan, transition))
+    return specs
 
 
 def _transition_spec_from_plan(plan, transition):
     source_stage = plan.stages[transition.source_stage_id]
     target_stage = plan.stages[transition.target_stage_id]
+    source_index = _resolve_transition_index(source_stage, transition.source_segment_index, -1)
+    target_index = _resolve_transition_index(target_stage, transition.target_segment_index, 0)
+    source_segment = source_stage.segments[source_index]
+    target_segment = target_stage.segments[target_index]
     return {
         "source_stage_id": transition.source_stage_id,
         "target_stage_id": transition.target_stage_id,
+        "source_segment_index": source_index,
+        "target_segment_index": target_index,
         "kind": transition.kind,
         "metadata": dict(transition.metadata),
-        "source_strategy": dict(source_stage.segments[-1].strategy),
-        "target_strategy": dict(target_stage.segments[0].strategy),
+        "source_strategy": dict(source_segment.strategy),
+        "target_strategy": dict(target_segment.strategy),
     }
 
 
 def _default_transition_specs(plan):
     specs = []
     for stage in plan.stages:
-        for source_segment, target_segment in zip(stage.segments, stage.segments[1:]):
+        for source_index, (source_segment, target_segment) in enumerate(
+            zip(stage.segments, stage.segments[1:])
+        ):
             specs.append(
                 {
                     "source_stage_id": stage.stage_id,
                     "target_stage_id": stage.stage_id,
+                    "source_segment_index": source_index,
+                    "target_segment_index": source_index + 1,
                     "kind": "intra-stage",
                     "metadata": {},
                     "source_strategy": dict(source_segment.strategy),
@@ -225,6 +246,8 @@ def _default_transition_specs(plan):
             {
                 "source_stage_id": source_stage.stage_id,
                 "target_stage_id": target_stage.stage_id,
+                "source_segment_index": len(source_stage.segments) - 1,
+                "target_segment_index": 0,
                 "kind": "pipeline",
                 "metadata": {},
                 "source_strategy": dict(source_stage.segments[-1].strategy),
@@ -232,6 +255,58 @@ def _default_transition_specs(plan):
             }
         )
     return specs
+
+
+def _merge_transition_spec(specs, explicit_spec):
+    matched = False
+    for index, spec in enumerate(specs):
+        if not _transition_matches(spec, explicit_spec):
+            continue
+        specs[index] = {
+            **spec,
+            "kind": explicit_spec["kind"],
+            "metadata": {
+                **dict(spec["metadata"]),
+                **dict(explicit_spec["metadata"]),
+            },
+        }
+        matched = True
+    if not matched:
+        specs.append(explicit_spec)
+
+
+def _transition_matches(spec, explicit_spec):
+    if (
+        spec["source_stage_id"] != explicit_spec["source_stage_id"]
+        or spec["target_stage_id"] != explicit_spec["target_stage_id"]
+    ):
+        return False
+    source_segment_index = explicit_spec["source_segment_index"]
+    target_segment_index = explicit_spec["target_segment_index"]
+    if source_segment_index is None and target_segment_index is None:
+        return True
+    return (
+        spec["source_segment_index"] == source_segment_index
+        and spec["target_segment_index"] == target_segment_index
+    )
+
+
+def _resolve_transition_index(stage, index, default_index):
+    if index is None:
+        return len(stage.segments) + default_index if default_index < 0 else default_index
+    return index
+
+
+def _attached_transition_peak_mb(stage_id, transitions):
+    return max(
+        (
+            transition["memory_mb"]
+            for transition in transitions
+            if transition["source_stage_id"] == stage_id
+            or transition["target_stage_id"] == stage_id
+        ),
+        default=0.0,
+    )
 
 
 def _config_with_num_layers(config, num_layers):

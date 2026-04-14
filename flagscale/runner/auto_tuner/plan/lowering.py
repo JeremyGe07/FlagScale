@@ -17,7 +17,7 @@ def build_execution_contract(strategy, config) -> ExecutionContract:
     )
 
 
-def lower_strategy_to_plan(strategy, config) -> ModelPlan:
+def lower_strategy_to_plan(strategy, config, validate=True) -> ModelPlan:
     num_layers = strategy.get("num_layers", config.train.model.num_layers)
     pp_size = strategy["pipeline_model_parallel_size"]
     stage_device_groups = _contiguous_stage_groups(_resolve_world_size(config), pp_size)
@@ -33,7 +33,8 @@ def lower_strategy_to_plan(strategy, config) -> ModelPlan:
         contract=build_execution_contract(strategy, config),
         total_layers=num_layers,
     )
-    validate_model_plan(plan)
+    if validate:
+        validate_model_plan(plan)
     return plan
 
 def _resolve_world_size(config) -> int:

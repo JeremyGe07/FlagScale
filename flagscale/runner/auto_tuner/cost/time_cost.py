@@ -2,6 +2,7 @@ from copy import deepcopy
 from math import log2
 
 from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy
 
@@ -40,9 +41,12 @@ DEFAULT_TIME_BREAKDOWN = {
 
 
 def estimate_time_cost(strategy, config):
-    if isinstance(strategy, ModelPlan):
-        return _estimate_plan_time_cost(strategy, config)
-    return _estimate_strategy_time_cost(strategy, config)
+    plan = (
+        strategy
+        if isinstance(strategy, ModelPlan)
+        else lower_strategy_to_plan(strategy, config, validate=False)
+    )
+    return _estimate_plan_time_cost(plan, config)
 
 
 def _estimate_strategy_time_cost(strategy, config):
@@ -146,13 +150,15 @@ def _accumulate_breakdown(target, source):
 
 
 def _estimate_transition_time(spec, config):
+    source_strategy = _segment_strategy(spec["source_strategy"], spec["source_layer_count"])
+    target_strategy = _segment_strategy(spec["target_strategy"], spec["target_layer_count"])
     source_profile = build_cost_profile(
         _config_with_num_layers(config, spec["source_layer_count"]),
-        spec["source_strategy"],
+        source_strategy,
     )
     target_profile = build_cost_profile(
         _config_with_num_layers(config, spec["target_layer_count"]),
-        spec["target_strategy"],
+        target_strategy,
     )
     source_bytes = _activation_bytes(source_profile)
     target_bytes = _activation_bytes(target_profile)
@@ -161,12 +167,14 @@ def _estimate_transition_time(spec, config):
         max(source_bytes, target_bytes) * _transition_factor(spec),
         bandwidth_gbps,
         latency_us,
-        1,
+        _transition_repetitions(spec),
     )
     transition_ms *= FABRIC_PENALTIES.get(str(fabric).lower(), DEFAULT_FABRIC_PENALTY)
     return {
         "source_stage_id": spec["source_stage_id"],
         "target_stage_id": spec["target_stage_id"],
+        "source_segment_index": spec["source_segment_index"],
+        "target_segment_index": spec["target_segment_index"],
         "kind": spec["kind"],
         "metadata": dict(spec["metadata"]),
         "time_ms": transition_ms,
@@ -189,22 +197,35 @@ def _transition_factor(spec):
     return factor
 
 
+def _transition_repetitions(spec):
+    repetitions = max(
+        int(spec["source_strategy"]["acc_step"]),
+        int(spec["target_strategy"]["acc_step"]),
+    )
+    if spec["source_stage_id"] != spec["target_stage_id"]:
+        return repetitions * PP_TRANSFERS_PER_MICROBATCH
+    return repetitions
+
+
 def _plan_transition_specs(plan):
-    if plan.transitions:
-        return [
-            _transition_spec_from_plan(plan, transition) for transition in plan.transitions
-        ]
-    return _default_transition_specs(plan)
+    specs = _default_transition_specs(plan)
+    for transition in plan.transitions:
+        _merge_transition_spec(specs, _transition_spec_from_plan(plan, transition))
+    return specs
 
 
 def _transition_spec_from_plan(plan, transition):
     source_stage = plan.stages[transition.source_stage_id]
     target_stage = plan.stages[transition.target_stage_id]
-    source_segment = source_stage.segments[-1]
-    target_segment = target_stage.segments[0]
+    source_index = _resolve_transition_index(source_stage, transition.source_segment_index, -1)
+    target_index = _resolve_transition_index(target_stage, transition.target_segment_index, 0)
+    source_segment = source_stage.segments[source_index]
+    target_segment = target_stage.segments[target_index]
     return {
         "source_stage_id": transition.source_stage_id,
         "target_stage_id": transition.target_stage_id,
+        "source_segment_index": source_index,
+        "target_segment_index": target_index,
         "kind": transition.kind,
         "metadata": dict(transition.metadata),
         "source_strategy": dict(source_segment.strategy),
@@ -217,11 +238,15 @@ def _transition_spec_from_plan(plan, transition):
 def _default_transition_specs(plan):
     specs = []
     for stage in plan.stages:
-        for source_segment, target_segment in zip(stage.segments, stage.segments[1:]):
+        for source_index, (source_segment, target_segment) in enumerate(
+            zip(stage.segments, stage.segments[1:])
+        ):
             specs.append(
                 {
                     "source_stage_id": stage.stage_id,
                     "target_stage_id": stage.stage_id,
+                    "source_segment_index": source_index,
+                    "target_segment_index": source_index + 1,
                     "kind": "intra-stage",
                     "metadata": {},
                     "source_strategy": dict(source_segment.strategy),
@@ -237,6 +262,8 @@ def _default_transition_specs(plan):
             {
                 "source_stage_id": source_stage.stage_id,
                 "target_stage_id": target_stage.stage_id,
+                "source_segment_index": len(source_stage.segments) - 1,
+                "target_segment_index": 0,
                 "kind": "pipeline",
                 "metadata": {},
                 "source_strategy": dict(source_segment.strategy),
@@ -246,6 +273,46 @@ def _default_transition_specs(plan):
             }
         )
     return specs
+
+
+def _merge_transition_spec(specs, explicit_spec):
+    matched = False
+    for index, spec in enumerate(specs):
+        if not _transition_matches(spec, explicit_spec):
+            continue
+        specs[index] = {
+            **spec,
+            "kind": explicit_spec["kind"],
+            "metadata": {
+                **dict(spec["metadata"]),
+                **dict(explicit_spec["metadata"]),
+            },
+        }
+        matched = True
+    if not matched:
+        specs.append(explicit_spec)
+
+
+def _transition_matches(spec, explicit_spec):
+    if (
+        spec["source_stage_id"] != explicit_spec["source_stage_id"]
+        or spec["target_stage_id"] != explicit_spec["target_stage_id"]
+    ):
+        return False
+    source_segment_index = explicit_spec["source_segment_index"]
+    target_segment_index = explicit_spec["target_segment_index"]
+    if source_segment_index is None and target_segment_index is None:
+        return True
+    return (
+        spec["source_segment_index"] == source_segment_index
+        and spec["target_segment_index"] == target_segment_index
+    )
+
+
+def _resolve_transition_index(stage, index, default_index):
+    if index is None:
+        return len(stage.segments) + default_index if default_index < 0 else default_index
+    return index
 
 
 def _config_with_num_layers(config, num_layers):

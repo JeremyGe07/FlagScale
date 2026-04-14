@@ -52,6 +52,8 @@ class TransitionPlan:
     source_stage_id: int
     target_stage_id: int
     kind: str
+    source_segment_index: int | None = None
+    target_segment_index: int | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

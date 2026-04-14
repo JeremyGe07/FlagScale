@@ -34,6 +34,8 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
                 "source_stage_id": transition.source_stage_id,
                 "target_stage_id": transition.target_stage_id,
                 "kind": transition.kind,
+                "source_segment_index": transition.source_segment_index,
+                "target_segment_index": transition.target_segment_index,
                 "metadata": dict(transition.metadata),
             }
             for transition in plan.transitions

@@ -412,3 +412,103 @@ def test_build_cost_profile_keeps_segment_strategy_and_transition_metadata(tmp_p
     assert "strategy" not in profile["runtime"]
     assert runtime_plan["stages"][1]["segments"][0]["strategy"]["tensor_model_parallel_size"] == 2
     assert runtime_plan["transitions"][1]["metadata"]["reshard_factor"] == 2.0
+
+
+def test_explicit_stage_transition_does_not_drop_intra_stage_transitions(tmp_path):
+    config = _make_config(tmp_path, num_layers=18, global_batch_size=12, cards=3)
+    base_plan = lower_strategy_to_plan(
+        _strategy(
+            data_parallel_size=1,
+            pipeline_model_parallel_size=3,
+            num_layers_per_virtual_pipeline_stage=2,
+            micro_batch_size=2,
+            acc_step=6,
+        ),
+        config,
+    )
+    plan = ModelPlan(
+        stages=base_plan.stages,
+        transitions=(
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=1,
+                kind="reshard",
+                metadata={"reshard_factor": 1.5},
+            ),
+        ),
+        contract=base_plan.contract,
+        total_layers=base_plan.total_layers,
+    )
+
+    memory_cost = estimate_memory_cost(plan, config)
+    time_cost = estimate_time_cost(plan, config)
+
+    assert len(memory_cost["memory_breakdown"]["plan"]["transitions"]) == 8
+    assert len(time_cost["time_breakdown"]["plan"]["transitions"]) == 8
+
+
+def test_explicit_segment_transition_targets_single_boundary(tmp_path):
+    config = _make_config(tmp_path, num_layers=18, global_batch_size=12, cards=3)
+    base_plan = lower_strategy_to_plan(
+        _strategy(
+            data_parallel_size=1,
+            pipeline_model_parallel_size=3,
+            num_layers_per_virtual_pipeline_stage=2,
+            micro_batch_size=2,
+            acc_step=6,
+        ),
+        config,
+    )
+    plan = ModelPlan(
+        stages=base_plan.stages,
+        transitions=(
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=0,
+                source_segment_index=0,
+                target_segment_index=1,
+                kind="reshard",
+                metadata={"reshard_factor": 3.0},
+            ),
+        ),
+        contract=base_plan.contract,
+        total_layers=base_plan.total_layers,
+    )
+
+    memory_transitions = estimate_memory_cost(plan, config)["memory_breakdown"]["plan"]["transitions"]
+    time_transitions = estimate_time_cost(plan, config)["time_breakdown"]["plan"]["transitions"]
+    targeted_memory = next(
+        transition
+        for transition in memory_transitions
+        if transition["source_stage_id"] == 0
+        and transition["target_stage_id"] == 0
+        and transition["source_segment_index"] == 0
+        and transition["target_segment_index"] == 1
+    )
+    untouched_memory = next(
+        transition
+        for transition in memory_transitions
+        if transition["source_stage_id"] == 0
+        and transition["target_stage_id"] == 0
+        and transition["source_segment_index"] == 1
+        and transition["target_segment_index"] == 2
+    )
+    targeted_time = next(
+        transition
+        for transition in time_transitions
+        if transition["source_stage_id"] == 0
+        and transition["target_stage_id"] == 0
+        and transition["source_segment_index"] == 0
+        and transition["target_segment_index"] == 1
+    )
+    untouched_time = next(
+        transition
+        for transition in time_transitions
+        if transition["source_stage_id"] == 0
+        and transition["target_stage_id"] == 0
+        and transition["source_segment_index"] == 1
+        and transition["target_segment_index"] == 2
+    )
+
+    assert targeted_memory["memory_mb"] > untouched_memory["memory_mb"]
+    assert targeted_time["time_ms"] > untouched_time["time_ms"]

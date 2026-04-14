@@ -6,6 +6,7 @@ from flagscale.runner.auto_tuner.chip_profile import (
     load_chip_profile,
     normalize_chip_profile,
 )
+from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 from flagscale.runner.auto_tuner.plan.summary import (
     extract_homogeneous_strategy,
@@ -49,7 +50,7 @@ REQUIRED_STRATEGY_FIELDS = (
 def build_cost_profile(config, strategy):
     config_dict = _to_plain_mapping(config, "config")
     profile = _resolve_chip_profile(config_dict)
-    runtime_profile = _build_runtime_profile(config_dict, strategy)
+    runtime_profile = _build_runtime_profile(config, config_dict, strategy)
     return {
         "hardware": _build_hardware_profile(profile),
         "runtime": runtime_profile,
@@ -78,18 +79,22 @@ def _build_hardware_profile(profile):
     }
 
 
-def _build_runtime_profile(config, strategy):
-    runtime_profile = _build_runtime_base(config)
+def _build_runtime_profile(config_obj, config_dict, strategy):
+    runtime_profile = _build_runtime_base(config_dict)
     if isinstance(strategy, ModelPlan):
-        runtime_profile["plan"] = summarize_plan(strategy)
-        compatible_strategy = extract_homogeneous_strategy(strategy)
-        if compatible_strategy is not None:
-            runtime_profile["strategy"] = _build_strategy_profile(
-                compatible_strategy, "plan.strategy"
-            )
-        return runtime_profile
-    strategy_dict = _to_plain_mapping(strategy, "strategy")
-    runtime_profile["strategy"] = _build_strategy_profile(strategy_dict, "strategy")
+        plan = strategy
+    else:
+        strategy_dict = _to_plain_mapping(strategy, "strategy")
+        _build_strategy_profile(strategy_dict, "strategy")
+        lowering_config = config_obj if OmegaConf.is_config(config_obj) else OmegaConf.create(config_dict)
+        plan = lower_strategy_to_plan(strategy_dict, lowering_config, validate=False)
+    runtime_profile["plan"] = summarize_plan(plan)
+    compatible_strategy = extract_homogeneous_strategy(plan)
+    if compatible_strategy is not None:
+        runtime_profile["strategy"] = _build_strategy_profile(
+            compatible_strategy,
+            "plan.strategy",
+        )
     return runtime_profile
 
 

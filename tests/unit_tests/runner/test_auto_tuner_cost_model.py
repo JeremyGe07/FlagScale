@@ -271,29 +271,28 @@ def test_build_cost_profile_returns_normalized_sections(tmp_path):
 
     assert result["hardware"]["memory"]["total_memory_mb"] == 46000
     assert result["hardware"]["cost_model"]["peak_activation_bias_mb"] == 0
-    assert result["runtime"] == {
-        "nnodes": 1,
-        "nproc_per_node": 2,
-        "world_size": 2,
-        "strategy": {
-            "data_parallel_size": 1,
-            "tensor_model_parallel_size": 2,
-            "pipeline_model_parallel_size": 1,
-            "num_layers_per_virtual_pipeline_stage": None,
-            "recompute_method": None,
-            "recompute_granularity": None,
-            "recompute_num_layers": None,
-            "micro_batch_size": 4,
-            "context_parallel_size": 1,
-            "expert_model_parallel_size": 1,
-            "acc_step": 8,
-            "decoder_first_pipeline_num_layers": None,
-            "decoder_last_pipeline_num_layers": None,
-            "sequence_parallel": False,
-            "use_distributed_optimizer": False,
-            "use_recompute": False,
-        },
+    assert result["runtime"]["nnodes"] == 1
+    assert result["runtime"]["nproc_per_node"] == 2
+    assert result["runtime"]["world_size"] == 2
+    assert result["runtime"]["strategy"] == {
+        "data_parallel_size": 1,
+        "tensor_model_parallel_size": 2,
+        "pipeline_model_parallel_size": 1,
+        "num_layers_per_virtual_pipeline_stage": None,
+        "recompute_method": None,
+        "recompute_granularity": None,
+        "recompute_num_layers": None,
+        "micro_batch_size": 4,
+        "context_parallel_size": 1,
+        "expert_model_parallel_size": 1,
+        "acc_step": 8,
+        "decoder_first_pipeline_num_layers": None,
+        "decoder_last_pipeline_num_layers": None,
+        "sequence_parallel": False,
+        "use_distributed_optimizer": False,
+        "use_recompute": False,
     }
+    assert result["runtime"]["plan"]["stage_count"] == 1
     assert result["model"] == {
         "num_layers": 28,
         "hidden_size": 1536,
