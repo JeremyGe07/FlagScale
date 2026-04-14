@@ -67,8 +67,9 @@ def _estimate_plan_memory_cost(plan, config):
     plan_breakdown = _build_plan_memory_breakdown(plan, config)
     memory_total_mb = plan_breakdown["peak_combined_memory_total_mb"]
     breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
-    breakdown["peak_mb"] = memory_total_mb
-    breakdown["activations_mb"] = memory_total_mb
+    breakdown["peak_mb"] = plan_breakdown["peak_combined_peak_mb"]
+    breakdown["activations_mb"] = plan_breakdown["peak_combined_peak_mb"]
+    breakdown["reserved_mb"] = plan_breakdown["peak_combined_reserved_mb"]
     breakdown["plan"] = plan_breakdown
     return {"memory_total_mb": memory_total_mb, "memory_breakdown": breakdown}
 
@@ -82,13 +83,16 @@ def _build_plan_memory_breakdown(plan, config):
         key=lambda transition: transition["memory_mb"],
         default=None,
     )
-    peak_combined = max(
-        (
-            stage["memory_total_mb"]
-            + _attached_transition_peak_mb(stage["stage_id"], transitions)
-            for stage in stages
-        ),
-        default=0.0,
+    peak_combined_stage, peak_combined_transition_mb = _peak_combined_stage(stages, transitions)
+    peak_combined = (
+        0.0
+        if peak_combined_stage is None
+        else peak_combined_stage["memory_total_mb"] + peak_combined_transition_mb
+    )
+    peak_combined_reserved_mb = (
+        0.0
+        if peak_combined_stage is None
+        else peak_combined_stage["memory_breakdown"]["reserved_mb"]
     )
     return {
         "stages": stages,
@@ -101,6 +105,11 @@ def _build_plan_memory_breakdown(plan, config):
             0.0 if peak_transition is None else peak_transition["memory_mb"]
         ),
         "peak_combined_memory_total_mb": peak_combined,
+        "peak_combined_peak_mb": max(peak_combined - peak_combined_reserved_mb, 0.0),
+        "peak_combined_reserved_mb": peak_combined_reserved_mb,
+        "peak_combined_stage_id": (
+            None if peak_combined_stage is None else peak_combined_stage["stage_id"]
+        ),
     }
 
 
@@ -307,6 +316,20 @@ def _attached_transition_peak_mb(stage_id, transitions):
         ),
         default=0.0,
     )
+
+
+def _peak_combined_stage(stages, transitions):
+    peak_stage = None
+    peak_transition_mb = 0.0
+    peak_total_mb = 0.0
+    for stage in stages:
+        transition_mb = _attached_transition_peak_mb(stage["stage_id"], transitions)
+        total_mb = stage["memory_total_mb"] + transition_mb
+        if peak_stage is None or total_mb > peak_total_mb:
+            peak_stage = stage
+            peak_transition_mb = transition_mb
+            peak_total_mb = total_mb
+    return peak_stage, peak_transition_mb
 
 
 def _config_with_num_layers(config, num_layers):

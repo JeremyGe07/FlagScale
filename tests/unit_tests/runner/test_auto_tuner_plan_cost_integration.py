@@ -1,3 +1,5 @@
+import importlib
+
 import pytest
 
 from omegaconf import OmegaConf
@@ -568,3 +570,68 @@ def test_recorder_persists_nested_transition_metadata_in_plan_cost_breakdowns(tm
 
     assert history[0]["memory_breakdown"]["plan"]["transitions"][0]["metadata"]["attrs"]["mode"] == "stage"
     assert history[0]["time_breakdown"]["plan"]["transitions"][0]["metadata"]["attrs"]["mode"] == "stage"
+
+
+def test_transition_link_uses_slower_source_or_target_profile(tmp_path):
+    time_cost_module = importlib.import_module("flagscale.runner.auto_tuner.cost.time_cost")
+    config = _make_config(tmp_path, num_layers=8, global_batch_size=8, cards=4)
+    config.experiment.runner.nnodes = 2
+    config.experiment.runner.nproc_per_node = 2
+    config.experiment.auto_tuner.nnodes = 2
+    config.experiment.auto_tuner.nproc_per_node = 2
+
+    source_profile = build_cost_profile(
+        config,
+        _strategy(pipeline_model_parallel_size=2, acc_step=2),
+    )
+    target_profile = build_cost_profile(
+        config,
+        _strategy(pipeline_model_parallel_size=4, acc_step=2),
+    )
+
+    bandwidth_gbps, latency_us, fabric = time_cost_module._transition_link(
+        source_profile,
+        target_profile,
+    )
+
+    assert bandwidth_gbps == pytest.approx(24.0)
+    assert latency_us == pytest.approx(10.0)
+    assert fabric == "host_device"
+
+
+def test_hetero_top_level_memory_breakdown_keeps_reserved_bias_consistent(tmp_path):
+    config = _make_config(tmp_path, num_layers=8, global_batch_size=8, cards=4)
+    config.experiment.auto_tuner.chip_profile.profile["cost_model"]["reserved_memory_bias_mb"] = 512
+    plan = ModelPlan(
+        stages=(
+            StagePlan(
+                stage_id=0,
+                device_group=(0, 1),
+                segments=(SegmentPlan(start=0, end=3, strategy=_strategy()),),
+            ),
+            StagePlan(
+                stage_id=1,
+                device_group=(2, 3),
+                segments=(
+                    SegmentPlan(
+                        start=4,
+                        end=7,
+                        strategy=_strategy(tensor_model_parallel_size=2),
+                    ),
+                ),
+            ),
+        ),
+        contract=ExecutionContract(
+            world_size=4,
+            micro_batch_size=2,
+            gradient_accumulation_steps=4,
+            global_batch_size=8,
+        ),
+        total_layers=8,
+    )
+
+    result = estimate_memory_cost(plan, config)
+    breakdown = result["memory_breakdown"]
+
+    assert breakdown["reserved_mb"] == pytest.approx(512.0)
+    assert breakdown["peak_mb"] + breakdown["reserved_mb"] == pytest.approx(result["memory_total_mb"])

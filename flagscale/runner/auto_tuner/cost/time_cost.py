@@ -162,7 +162,7 @@ def _estimate_transition_time(spec, config):
     )
     source_bytes = _activation_bytes(source_profile)
     target_bytes = _activation_bytes(target_profile)
-    bandwidth_gbps, latency_us, fabric = _communication_link(source_profile, "pp", "p2p")
+    bandwidth_gbps, latency_us, fabric = _transition_link(source_profile, target_profile)
     transition_ms = _transfer_ms(
         max(source_bytes, target_bytes) * _transition_factor(spec),
         bandwidth_gbps,
@@ -179,6 +179,23 @@ def _estimate_transition_time(spec, config):
         "metadata": to_json_safe(dict(spec["metadata"])),
         "time_ms": transition_ms,
     }
+
+
+def _transition_link(source_profile, target_profile):
+    return _slower_link(
+        _communication_link(source_profile, "pp", "p2p"),
+        _communication_link(target_profile, "pp", "p2p"),
+    )
+
+
+def _slower_link(source_link, target_link):
+    if source_link[0] != target_link[0]:
+        return source_link if source_link[0] < target_link[0] else target_link
+    if source_link[1] != target_link[1]:
+        return source_link if source_link[1] > target_link[1] else target_link
+    source_penalty = FABRIC_PENALTIES.get(str(source_link[2]).lower(), DEFAULT_FABRIC_PENALTY)
+    target_penalty = FABRIC_PENALTIES.get(str(target_link[2]).lower(), DEFAULT_FABRIC_PENALTY)
+    return source_link if source_penalty >= target_penalty else target_link
 
 
 def _transition_factor(spec):
