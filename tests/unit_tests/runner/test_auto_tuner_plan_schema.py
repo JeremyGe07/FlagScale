@@ -85,13 +85,18 @@ def test_importing_plan_module_does_not_load_tuner():
         _restore_modules(previous_modules)
 
 
-def test_import_plan_module_restores_existing_tuner_module():
-    importlib.import_module("flagscale.runner.auto_tuner")
-    original_tuner_module = importlib.import_module("flagscale.runner.auto_tuner.tuner")
+def test_import_plan_module_restores_existing_dummy_tuner_module(monkeypatch):
+    dummy_auto_tuner = types.ModuleType("flagscale.runner.auto_tuner")
+    dummy_tuner = types.ModuleType("flagscale.runner.auto_tuner.tuner")
+    dummy_auto_tuner.tuner = dummy_tuner
+    monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner", dummy_auto_tuner)
+    monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.tuner", dummy_tuner)
 
     _import_plan_module()
 
-    assert sys.modules["flagscale.runner.auto_tuner.tuner"] is original_tuner_module
+    assert sys.modules["flagscale.runner.auto_tuner"] is dummy_auto_tuner
+    assert sys.modules["flagscale.runner.auto_tuner.tuner"] is dummy_tuner
+    assert sys.modules["flagscale.runner.auto_tuner"].tuner is dummy_tuner
 
 
 def test_auto_tuner_dir_does_not_duplicate_lazy_exports(monkeypatch):
