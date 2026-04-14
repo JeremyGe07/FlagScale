@@ -3,16 +3,31 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _freeze_mapping(value)
+    if isinstance(value, list):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, set):
+        return frozenset(_freeze_value(item) for item in value)
+    return value
+
+
 def _freeze_mapping(values: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    return MappingProxyType(dict(values or {}))
+    frozen_values = {key: _freeze_value(value) for key, value in dict(values or {}).items()}
+    return MappingProxyType(frozen_values)
 
 
 def _freeze_tuple(values: tuple[Any, ...] | list[Any]) -> tuple[Any, ...]:
-    return tuple(values)
+    return tuple(_freeze_value(value) for value in values)
 
 
 @dataclass(frozen=True)
 class SegmentPlan:
+    """A stage-local layer span using inclusive bounds [start, end]."""
+
     start: int
     end: int
     strategy: Mapping[str, Any]
