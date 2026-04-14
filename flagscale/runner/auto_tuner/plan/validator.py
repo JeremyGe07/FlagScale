@@ -22,6 +22,7 @@ class PlanValidationResult:
 
 def validate_model_plan(plan: ModelPlan) -> PlanValidationResult:
     runtime_mode = _runtime_mode(plan)
+    _validate_stage_ids(plan)
     _validate_stage_segments(plan)
     _validate_global_coverage(plan)
     _validate_parallelism(plan)
@@ -36,6 +37,17 @@ def _runtime_mode(plan: ModelPlan) -> Literal["stage-executable", "analysis-only
     if plan.stages and all(len(stage.segments) == 1 for stage in plan.stages):
         return STAGE_EXECUTABLE
     return ANALYSIS_ONLY
+
+
+def _validate_stage_ids(plan: ModelPlan) -> None:
+    stage_ids = [stage.stage_id for stage in plan.stages]
+    if len(set(stage_ids)) != len(stage_ids):
+        raise ValueError("stage_id values must be unique")
+    for index, stage_id in enumerate(stage_ids):
+        if index == 0 and stage_id != 0:
+            raise ValueError("stage_id values must start from 0")
+        if index > 0 and stage_id != index:
+            raise ValueError("stage_id values must be continuous in plan order")
 
 
 def _validate_stage_segments(plan: ModelPlan) -> None:
@@ -125,8 +137,14 @@ def _validate_global_batch_size(plan: ModelPlan) -> None:
 
 def _validate_stage_executable_constraints(plan: ModelPlan) -> None:
     used_ranks = _validate_required_stage_device_groups(plan)
+    expected_dp_size: int | None = None
     for stage in plan.stages:
         segment = stage.segments[0]
+        dp_size = _required_strategy_int(segment.strategy, DATA_PARALLEL_KEYS)
+        if expected_dp_size is None:
+            expected_dp_size = dp_size
+        elif dp_size != expected_dp_size:
+            raise ValueError("data_parallel_size must be consistent across stages")
         pp_size = _strategy_int(segment.strategy, ("pipeline_model_parallel_size", "pp"))
         if pp_size is not None and pp_size != len(plan.stages):
             raise ValueError("pipeline_model_parallel_size must equal len(plan.stages)")
@@ -144,6 +162,7 @@ def _validate_explicit_device_groups(plan: ModelPlan) -> None:
     for stage in plan.stages:
         if not stage.device_group:
             continue
+        _validate_device_group_ranks(stage.device_group, plan.contract)
         if len(set(stage.device_group)) != len(stage.device_group):
             raise ValueError(f"stage {stage.stage_id} device_group contains duplicate ranks")
         overlap = used_ranks.intersection(stage.device_group)
@@ -167,6 +186,20 @@ def _required_parallel_ranks(strategy: dict[str, object]) -> int:
     cp_size = _required_strategy_int(strategy, ("context_parallel_size", "cp"))
     ep_size = _required_strategy_int(strategy, ("expert_model_parallel_size", "ep"))
     return dp_size * tp_size * cp_size * ep_size
+
+
+def _validate_device_group_ranks(
+    device_group: tuple[object, ...],
+    contract: object | None,
+) -> None:
+    world_size = getattr(contract, "world_size", None)
+    for rank in device_group:
+        if not isinstance(rank, int) or isinstance(rank, bool):
+            raise ValueError("device_group ranks must be int")
+        if rank < 0:
+            raise ValueError("device_group ranks must be >= 0")
+        if world_size is not None and rank >= world_size:
+            raise ValueError("device_group ranks must be < contract.world_size")
 
 
 def _required_strategy_int(strategy: dict[str, object], keys: tuple[str, ...]) -> int:

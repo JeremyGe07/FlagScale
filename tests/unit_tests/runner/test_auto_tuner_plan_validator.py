@@ -106,6 +106,31 @@ def test_validate_model_plan_accepts_analysis_only_plan_with_valid_explicit_devi
 
 
 @pytest.mark.parametrize(
+    ("device_group", "contract", "message"),
+    [
+        ((-1, 0), _contract(), ">= 0"),
+        (("a", "b"), _contract(), "int"),
+        ((0, 4), _contract(world_size=4), "world_size"),
+    ],
+)
+def test_validate_model_plan_rejects_invalid_explicit_device_group_ranks(
+    device_group,
+    contract,
+    message,
+):
+    plan = _build_analysis_only_plan(
+        contract=contract,
+        stages=(
+            _stage(0, (_segment(0, 1), _segment(2, 3)), device_group=device_group),
+            _stage(1, (_segment(4, 5),)),
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _validate(plan)
+
+
+@pytest.mark.parametrize(
     ("plan", "message"),
     [
         (
@@ -161,6 +186,39 @@ def test_validate_model_plan_rejects_invalid_per_stage_segment_coverage(segments
             _stage(1, (_segment(4, 5),)),
         ),
     )
+
+    with pytest.raises(ValueError, match=message):
+        _validate(plan)
+
+
+@pytest.mark.parametrize(
+    ("stages", "message"),
+    [
+        (
+            (
+                _stage(7, (_segment(0, 1),)),
+                _stage(7, (_segment(2, 3),)),
+            ),
+            "unique",
+        ),
+        (
+            (
+                _stage(1, (_segment(0, 1),)),
+                _stage(2, (_segment(2, 3),)),
+            ),
+            "from 0",
+        ),
+        (
+            (
+                _stage(0, (_segment(0, 1),)),
+                _stage(2, (_segment(2, 3),)),
+            ),
+            "continuous",
+        ),
+    ],
+)
+def test_validate_model_plan_rejects_invalid_stage_ids(stages, message):
+    plan = _build_stage_executable_plan(stages=stages)
 
     with pytest.raises(ValueError, match=message):
         _validate(plan)
@@ -272,6 +330,19 @@ def test_validate_model_plan_rejects_data_parallelism_that_exceeds_stage_device_
     )
 
     with pytest.raises(ValueError, match="device_group"):
+        _validate(plan)
+
+
+def test_validate_model_plan_rejects_inconsistent_data_parallelism_across_stages():
+    plan = _build_stage_executable_plan(
+        contract=_contract(gbs=None),
+        stages=(
+            _stage(0, (_segment(0, 1, data_parallel_size=1),), device_group=(0,)),
+            _stage(1, (_segment(2, 3, data_parallel_size=2),), device_group=(1, 2)),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="data_parallel_size"):
         _validate(plan)
 
 
