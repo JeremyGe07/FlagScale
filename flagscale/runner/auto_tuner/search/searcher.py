@@ -11,6 +11,8 @@ from omegaconf import OmegaConf
 from flagscale.runner.auto_tuner.chip_profile import attach_chip_profile, get_attached_chip_profile
 from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
 from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
+from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
+from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
 from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
@@ -126,6 +128,8 @@ class Searcher:
                 len(self.strategies), end_time - start_time
             )
         )
+        if self.__class__ is Searcher:
+            self._inject_runtime_plan_metadata()
         self._inject_chip_scores(self.strategies, self.config)
 
         if (
@@ -386,6 +390,14 @@ class Searcher:
                     strategy, strategy["time_cost"]
                 )
             )
+
+    def _inject_runtime_plan_metadata(self):
+        for strategy in self.strategies:
+            plan = lower_strategy_to_plan(strategy, self.config)
+            validation = validate_model_plan(plan)
+            strategy["plan"] = plan
+            strategy["runtime_mode"] = validation.runtime_mode
+            strategy["runtime_executable"] = validation.runtime_mode == "stage-executable"
 
     def _product_parallel_dims(self, space, config):
         # Avoid space explosion after product
