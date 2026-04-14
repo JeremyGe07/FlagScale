@@ -205,7 +205,13 @@ def test_lower_strategy_to_plan_builds_interleaved_segments_for_vpp(tmp_path):
 def test_summarize_plan_is_json_safe_for_frozen_nested_values(tmp_path):
     _, lower_strategy_to_plan, summarize_plan, _, _, _ = _load_lowering_types()
     config = _make_config(tmp_path, num_layers=8, cards=2)
-    plan = lower_strategy_to_plan(_strategy(data_parallel_size=2), config)
+    plan = lower_strategy_to_plan(
+        _strategy(
+            data_parallel_size=2,
+            nested={"labels": {"a", "b"}, "attrs": {"mode": "stage"}},
+        ),
+        config,
+    )
 
     stage = plan.stages[0]
     plan_with_metadata = plan.__class__(
@@ -215,7 +221,7 @@ def test_summarize_plan_is_json_safe_for_frozen_nested_values(tmp_path):
                 source_stage_id=0,
                 target_stage_id=0,
                 kind="note",
-                metadata={"labels": {"a", "b"}},
+                metadata={"labels": {"a", "b"}, "attrs": {"mode": "stage"}},
             ),
         ),
         contract=plan.contract,
@@ -225,6 +231,8 @@ def test_summarize_plan_is_json_safe_for_frozen_nested_values(tmp_path):
     summary = summarize_plan(plan_with_metadata)
 
     assert stage.segments[0].strategy["data_parallel_size"] == 2
+    assert summary["stages"][0]["segments"][0]["strategy"]["nested"]["attrs"]["mode"] == "stage"
+    assert summary["transitions"][0]["metadata"]["attrs"]["mode"] == "stage"
     json.dumps(summary)
 
 

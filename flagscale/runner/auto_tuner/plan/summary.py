@@ -1,13 +1,15 @@
+from collections.abc import Mapping, Sequence, Set
+
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 
 
 def _json_safe(value):
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {key: _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, (set, frozenset)):
+    if isinstance(value, Set):
         return [_json_safe(item) for item in sorted(value, key=repr)]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe(item) for item in value]
     return value
 
 
