@@ -65,16 +65,22 @@ def _estimate_strategy_time_cost(strategy, config):
 
 
 def _estimate_plan_time_cost(plan, config):
-    plan_breakdown = _build_plan_time_breakdown(plan, config)
     strategy = extract_homogeneous_strategy(plan)
     if strategy is not None:
         result = _estimate_strategy_time_cost(strategy, config)
-        result["time_breakdown"]["plan"] = plan_breakdown
+        result["time_breakdown"]["plan"] = _build_plan_time_breakdown(plan, config)
         return result
+    plan_breakdown = _build_plan_time_breakdown(plan, config)
     breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
-    for stage in plan_breakdown["stages"]:
-        _accumulate_breakdown(breakdown, stage["time_breakdown"])
-    breakdown["pp_comm_ms"] = sum(item["time_ms"] for item in plan_breakdown["transitions"])
+    peak_stage = max(
+        plan_breakdown["stages"],
+        key=lambda stage: stage["time_total_ms"],
+        default=None,
+    )
+    if peak_stage is not None:
+        for key in DEFAULT_TIME_BREAKDOWN:
+            breakdown[key] = peak_stage["time_breakdown"][key]
+    breakdown["pp_comm_ms"] += sum(item["time_ms"] for item in plan_breakdown["transitions"])
     time_total_ms = sum(breakdown.values())
     breakdown["plan"] = plan_breakdown
     return {"time_total_ms": time_total_ms, "time_breakdown": breakdown}
@@ -116,24 +122,115 @@ def _build_segment_time(segment, config):
 
 
 def _build_transition_breakdown(plan, config):
-    if len(plan.stages) < 2:
-        return []
-    strategy = dict(plan.stages[0].segments[0].strategy)
-    total_pp_comm_ms = _estimate_strategy_time_cost(strategy, config)["time_breakdown"]["pp_comm_ms"]
-    transition_ms = total_pp_comm_ms / (len(plan.stages) - 1)
-    return [
-        {
-            "source_stage_id": index,
-            "target_stage_id": index + 1,
-            "time_ms": transition_ms,
-        }
-        for index in range(len(plan.stages) - 1)
-    ]
+    return [_estimate_transition_time(spec, config) for spec in _plan_transition_specs(plan)]
 
 
 def _accumulate_breakdown(target, source):
     for key in DEFAULT_TIME_BREAKDOWN:
         target[key] += source[key]
+
+
+def _estimate_transition_time(spec, config):
+    source_profile = build_cost_profile(
+        _config_with_num_layers(config, spec["source_layer_count"]),
+        spec["source_strategy"],
+    )
+    target_profile = build_cost_profile(
+        _config_with_num_layers(config, spec["target_layer_count"]),
+        spec["target_strategy"],
+    )
+    source_bytes = _activation_bytes(source_profile)
+    target_bytes = _activation_bytes(target_profile)
+    bandwidth_gbps, latency_us, fabric = _communication_link(source_profile, "pp", "p2p")
+    transition_ms = _transfer_ms(
+        max(source_bytes, target_bytes) * _transition_factor(spec),
+        bandwidth_gbps,
+        latency_us,
+        1,
+    )
+    transition_ms *= FABRIC_PENALTIES.get(str(fabric).lower(), DEFAULT_FABRIC_PENALTY)
+    return {
+        "source_stage_id": spec["source_stage_id"],
+        "target_stage_id": spec["target_stage_id"],
+        "kind": spec["kind"],
+        "metadata": dict(spec["metadata"]),
+        "time_ms": transition_ms,
+    }
+
+
+def _transition_factor(spec):
+    metadata = spec["metadata"]
+    explicit_factor = metadata.get("reshard_factor")
+    if explicit_factor is not None:
+        return float(explicit_factor)
+    factor = 1.0
+    for key in (
+        "tensor_model_parallel_size",
+        "context_parallel_size",
+        "expert_model_parallel_size",
+    ):
+        if spec["source_strategy"].get(key) != spec["target_strategy"].get(key):
+            factor += 0.5
+    return factor
+
+
+def _plan_transition_specs(plan):
+    if plan.transitions:
+        return [
+            _transition_spec_from_plan(plan, transition) for transition in plan.transitions
+        ]
+    return _default_transition_specs(plan)
+
+
+def _transition_spec_from_plan(plan, transition):
+    source_stage = plan.stages[transition.source_stage_id]
+    target_stage = plan.stages[transition.target_stage_id]
+    source_segment = source_stage.segments[-1]
+    target_segment = target_stage.segments[0]
+    return {
+        "source_stage_id": transition.source_stage_id,
+        "target_stage_id": transition.target_stage_id,
+        "kind": transition.kind,
+        "metadata": dict(transition.metadata),
+        "source_strategy": dict(source_segment.strategy),
+        "target_strategy": dict(target_segment.strategy),
+        "source_layer_count": source_segment.end - source_segment.start + 1,
+        "target_layer_count": target_segment.end - target_segment.start + 1,
+    }
+
+
+def _default_transition_specs(plan):
+    specs = []
+    for stage in plan.stages:
+        for source_segment, target_segment in zip(stage.segments, stage.segments[1:]):
+            specs.append(
+                {
+                    "source_stage_id": stage.stage_id,
+                    "target_stage_id": stage.stage_id,
+                    "kind": "intra-stage",
+                    "metadata": {},
+                    "source_strategy": dict(source_segment.strategy),
+                    "target_strategy": dict(target_segment.strategy),
+                    "source_layer_count": source_segment.end - source_segment.start + 1,
+                    "target_layer_count": target_segment.end - target_segment.start + 1,
+                }
+            )
+    for source_stage, target_stage in zip(plan.stages, plan.stages[1:]):
+        source_segment = source_stage.segments[-1]
+        target_segment = target_stage.segments[0]
+        specs.append(
+            {
+                "source_stage_id": source_stage.stage_id,
+                "target_stage_id": target_stage.stage_id,
+                "kind": "pipeline",
+                "metadata": {},
+                "source_strategy": dict(source_segment.strategy),
+                "target_strategy": dict(target_segment.strategy),
+                "source_layer_count": source_segment.end - source_segment.start + 1,
+                "target_layer_count": target_segment.end - target_segment.start + 1,
+            }
+        )
+    return specs
 
 
 def _config_with_num_layers(config, num_layers):

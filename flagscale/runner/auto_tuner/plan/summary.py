@@ -19,20 +19,37 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
                 "stage_id": stage.stage_id,
                 "device_group": list(stage.device_group),
                 "segments": [
-                    {"start": segment.start, "end": segment.end} for segment in stage.segments
+                    {
+                        "start": segment.start,
+                        "end": segment.end,
+                        "strategy": dict(segment.strategy),
+                    }
+                    for segment in stage.segments
                 ],
             }
             for stage in plan.stages
+        ],
+        "transitions": [
+            {
+                "source_stage_id": transition.source_stage_id,
+                "target_stage_id": transition.target_stage_id,
+                "kind": transition.kind,
+                "metadata": dict(transition.metadata),
+            }
+            for transition in plan.transitions
         ],
     }
 
 
 def extract_homogeneous_strategy(plan: ModelPlan) -> dict[str, object] | None:
-    if not plan.stages or any(len(stage.segments) != 1 for stage in plan.stages):
+    if not plan.stages:
         return None
-    strategy = dict(plan.stages[0].segments[0].strategy)
-    for stage in plan.stages[1:]:
-        if dict(stage.segments[0].strategy) != strategy:
+    stage_segments = [segment for stage in plan.stages for segment in stage.segments]
+    if not stage_segments:
+        return None
+    strategy = dict(stage_segments[0].strategy)
+    for segment in stage_segments[1:]:
+        if dict(segment.strategy) != strategy:
             return None
     return strategy
 

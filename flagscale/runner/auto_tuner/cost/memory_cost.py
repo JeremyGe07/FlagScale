@@ -55,13 +55,16 @@ def _estimate_strategy_memory_cost(strategy, config):
 
 
 def _estimate_plan_memory_cost(plan, config):
-    plan_breakdown = _build_plan_memory_breakdown(plan, config)
     strategy = extract_homogeneous_strategy(plan)
     if strategy is not None:
         result = _estimate_strategy_memory_cost(strategy, config)
-        result["memory_breakdown"]["plan"] = plan_breakdown
+        result["memory_breakdown"]["plan"] = _build_plan_memory_breakdown(plan, config)
         return result
-    memory_total_mb = plan_breakdown["peak_stage_memory_total_mb"]
+    plan_breakdown = _build_plan_memory_breakdown(plan, config)
+    memory_total_mb = max(
+        plan_breakdown["peak_stage_memory_total_mb"],
+        plan_breakdown["peak_transition_memory_mb"],
+    )
     breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
     breakdown["peak_mb"] = memory_total_mb
     breakdown["activations_mb"] = memory_total_mb
@@ -71,26 +74,35 @@ def _estimate_plan_memory_cost(plan, config):
 
 def _build_plan_memory_breakdown(plan, config):
     stages = [_build_stage_memory(stage, config) for stage in plan.stages]
+    transitions = _build_transition_memory(plan, config)
     peak_stage = max(stages, key=lambda stage: stage["memory_total_mb"], default=None)
+    peak_transition = max(
+        transitions,
+        key=lambda transition: transition["memory_mb"],
+        default=None,
+    )
     return {
         "stages": stages,
+        "transitions": transitions,
         "peak_stage_id": None if peak_stage is None else peak_stage["stage_id"],
         "peak_stage_memory_total_mb": (
             0.0 if peak_stage is None else peak_stage["memory_total_mb"]
+        ),
+        "peak_transition_memory_mb": (
+            0.0 if peak_transition is None else peak_transition["memory_mb"]
         ),
     }
 
 
 def _build_stage_memory(stage, config):
     segments = [_build_segment_memory(segment, config) for segment in stage.segments]
-    memory_total_mb = max(
-        (segment["memory_total_mb"] for segment in segments),
-        default=0.0,
-    )
+    stage_breakdown = _aggregate_stage_memory_breakdown(segments)
+    memory_total_mb = stage_breakdown["peak_mb"] + stage_breakdown["reserved_mb"]
     return {
         "stage_id": stage.stage_id,
         "device_group": list(stage.device_group),
         "memory_total_mb": memory_total_mb,
+        "memory_breakdown": stage_breakdown,
         "segments": segments,
     }
 
@@ -106,6 +118,120 @@ def _build_segment_memory(segment, config):
         "memory_total_mb": cost["memory_total_mb"],
         "memory_breakdown": cost["memory_breakdown"],
     }
+
+
+def _aggregate_stage_memory_breakdown(segments):
+    breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
+    if not segments:
+        return breakdown
+    breakdown["parameters_mb"] = sum(
+        segment["memory_breakdown"]["parameters_mb"] for segment in segments
+    )
+    breakdown["model_states_mb"] = sum(
+        segment["memory_breakdown"]["model_states_mb"] for segment in segments
+    )
+    breakdown["activations_mb"] = max(
+        segment["memory_breakdown"]["activations_mb"] for segment in segments
+    )
+    breakdown["recompute_saved_mb"] = sum(
+        segment["memory_breakdown"]["recompute_saved_mb"] for segment in segments
+    )
+    breakdown["reserved_mb"] = max(
+        segment["memory_breakdown"]["reserved_mb"] for segment in segments
+    )
+    breakdown["peak_mb"] = breakdown["model_states_mb"] + breakdown["activations_mb"]
+    return breakdown
+
+
+def _build_transition_memory(plan, config):
+    return [
+        _estimate_transition_memory(spec, config) for spec in _plan_transition_specs(plan)
+    ]
+
+
+def _estimate_transition_memory(spec, config):
+    source_mb = _activation_buffer_mb(config, spec["source_strategy"])
+    target_mb = _activation_buffer_mb(config, spec["target_strategy"])
+    factor = _transition_factor(spec)
+    return {
+        "source_stage_id": spec["source_stage_id"],
+        "target_stage_id": spec["target_stage_id"],
+        "kind": spec["kind"],
+        "metadata": dict(spec["metadata"]),
+        "memory_mb": max(source_mb, target_mb) * factor,
+    }
+
+
+def _activation_buffer_mb(config, strategy):
+    hidden_size = float(config.train.model.hidden_size)
+    seq_length = float(config.train.model.seq_length)
+    micro_batch_size = float(strategy["micro_batch_size"])
+    return (micro_batch_size * seq_length * hidden_size * 2.0) / NUM_BYTES_IN_MEGABYTE
+
+
+def _transition_factor(spec):
+    metadata = spec["metadata"]
+    explicit_factor = metadata.get("reshard_factor")
+    if explicit_factor is not None:
+        return float(explicit_factor)
+    factor = 1.0
+    for key in (
+        "tensor_model_parallel_size",
+        "context_parallel_size",
+        "expert_model_parallel_size",
+    ):
+        if spec["source_strategy"].get(key) != spec["target_strategy"].get(key):
+            factor += 0.5
+    return factor
+
+
+def _plan_transition_specs(plan):
+    if plan.transitions:
+        return [
+            _transition_spec_from_plan(plan, transition) for transition in plan.transitions
+        ]
+    return _default_transition_specs(plan)
+
+
+def _transition_spec_from_plan(plan, transition):
+    source_stage = plan.stages[transition.source_stage_id]
+    target_stage = plan.stages[transition.target_stage_id]
+    return {
+        "source_stage_id": transition.source_stage_id,
+        "target_stage_id": transition.target_stage_id,
+        "kind": transition.kind,
+        "metadata": dict(transition.metadata),
+        "source_strategy": dict(source_stage.segments[-1].strategy),
+        "target_strategy": dict(target_stage.segments[0].strategy),
+    }
+
+
+def _default_transition_specs(plan):
+    specs = []
+    for stage in plan.stages:
+        for source_segment, target_segment in zip(stage.segments, stage.segments[1:]):
+            specs.append(
+                {
+                    "source_stage_id": stage.stage_id,
+                    "target_stage_id": stage.stage_id,
+                    "kind": "intra-stage",
+                    "metadata": {},
+                    "source_strategy": dict(source_segment.strategy),
+                    "target_strategy": dict(target_segment.strategy),
+                }
+            )
+    for source_stage, target_stage in zip(plan.stages, plan.stages[1:]):
+        specs.append(
+            {
+                "source_stage_id": source_stage.stage_id,
+                "target_stage_id": target_stage.stage_id,
+                "kind": "pipeline",
+                "metadata": {},
+                "source_strategy": dict(source_stage.segments[-1].strategy),
+                "target_strategy": dict(target_stage.segments[0].strategy),
+            }
+        )
+    return specs
 
 
 def _config_with_num_layers(config, num_layers):
