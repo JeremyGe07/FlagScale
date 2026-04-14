@@ -8,9 +8,8 @@ from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
 def build_execution_contract(strategy, config) -> ExecutionContract:
-    world_size = _resolve_world_size(config)
     return ExecutionContract(
-        world_size=world_size,
+        world_size=_resolve_world_size(config),
         micro_batch_size=strategy["micro_batch_size"],
         gradient_accumulation_steps=strategy["acc_step"],
         global_batch_size=config.train.model.global_batch_size,
@@ -20,40 +19,47 @@ def build_execution_contract(strategy, config) -> ExecutionContract:
 def lower_strategy_to_plan(strategy, config) -> ModelPlan:
     num_layers = strategy.get("num_layers", config.train.model.num_layers)
     pp_size = strategy["pipeline_model_parallel_size"]
-    stage_layer_counts = _stage_layer_counts(num_layers, strategy)
     stage_device_groups = _contiguous_stage_groups(_resolve_world_size(config), pp_size)
-
-    stages = []
-    layer_start = 0
-    frozen_strategy = dict(strategy)
-    for stage_id, (layer_count, device_group) in enumerate(
-        zip(stage_layer_counts, stage_device_groups, strict=True)
-    ):
-        layer_end = layer_start + layer_count - 1
-        stages.append(
-            StagePlan(
-                stage_id=stage_id,
-                segments=(
-                    SegmentPlan(
-                        start=layer_start,
-                        end=layer_end,
-                        strategy=frozen_strategy,
-                    ),
-                ),
-                device_group=device_group,
-            )
-        )
-        layer_start = layer_end + 1
+    stage_segments = _build_stage_segments(num_layers, strategy)
 
     plan = ModelPlan(
-        stages=tuple(stages),
+        stages=tuple(
+            StagePlan(stage_id=stage_id, segments=segments, device_group=device_group)
+            for stage_id, (segments, device_group) in enumerate(
+                zip(stage_segments, stage_device_groups, strict=True)
+            )
+        ),
         contract=build_execution_contract(strategy, config),
         total_layers=num_layers,
     )
-    validation = validate_model_plan(plan)
-    if validation.runtime_mode != "stage-executable":
-        raise ValueError("homogeneous lowering must produce a stage-executable plan")
+    validate_model_plan(plan)
     return plan
+
+
+def summarize_plan(plan: ModelPlan) -> dict[str, object]:
+    return {
+        "total_layers": plan.total_layers,
+        "stage_count": len(plan.stages),
+        "vpp_stage_segment_counts": [len(stage.segments) for stage in plan.stages],
+        "contract": {
+            "world_size": None if plan.contract is None else plan.contract.world_size,
+            "micro_batch_size": None if plan.contract is None else plan.contract.micro_batch_size,
+            "gradient_accumulation_steps": (
+                None if plan.contract is None else plan.contract.gradient_accumulation_steps
+            ),
+            "global_batch_size": None if plan.contract is None else plan.contract.global_batch_size,
+        },
+        "stages": [
+            {
+                "stage_id": stage.stage_id,
+                "device_group": list(stage.device_group),
+                "segments": [
+                    {"start": segment.start, "end": segment.end} for segment in stage.segments
+                ],
+            }
+            for stage in plan.stages
+        ],
+    }
 
 
 def _resolve_world_size(config) -> int:
@@ -62,6 +68,66 @@ def _resolve_world_size(config) -> int:
         return int(auto_tuner.cards)
     runner = config.experiment.runner
     return int(runner.nnodes) * int(runner.nproc_per_node)
+
+
+def _build_stage_segments(num_layers: int, strategy) -> tuple[tuple[SegmentPlan, ...], ...]:
+    if _uses_vpp(strategy):
+        return _build_interleaved_stage_segments(num_layers, strategy)
+    return _build_stage_segments_without_vpp(num_layers, strategy)
+
+
+def _build_stage_segments_without_vpp(
+    num_layers: int,
+    strategy,
+) -> tuple[tuple[SegmentPlan, ...], ...]:
+    stage_segments = []
+    layer_start = 0
+    frozen_strategy = dict(strategy)
+    for layer_count in _stage_layer_counts(num_layers, strategy):
+        layer_end = layer_start + layer_count - 1
+        stage_segments.append(
+            (
+                SegmentPlan(
+                    start=layer_start,
+                    end=layer_end,
+                    strategy=frozen_strategy,
+                ),
+            )
+        )
+        layer_start = layer_end + 1
+    return tuple(stage_segments)
+
+
+def _build_interleaved_stage_segments(
+    num_layers: int,
+    strategy,
+) -> tuple[tuple[SegmentPlan, ...], ...]:
+    pp_size = strategy["pipeline_model_parallel_size"]
+    chunk_layers = strategy["num_layers_per_virtual_pipeline_stage"]
+    if num_layers % pp_size != 0:
+        raise ValueError("VPP lowering requires num_layers divisible by pipeline_model_parallel_size")
+    layers_per_stage = num_layers // pp_size
+    if layers_per_stage % chunk_layers != 0:
+        raise ValueError(
+            "VPP lowering requires stage layers divisible by num_layers_per_virtual_pipeline_stage"
+        )
+    total_chunks = num_layers // chunk_layers
+    frozen_strategy = dict(strategy)
+    stage_segments = []
+    for stage_id in range(pp_size):
+        segments = []
+        for chunk_index in range(stage_id, total_chunks, pp_size):
+            layer_start = chunk_index * chunk_layers
+            layer_end = layer_start + chunk_layers - 1
+            segments.append(
+                SegmentPlan(
+                    start=layer_start,
+                    end=layer_end,
+                    strategy=frozen_strategy,
+                )
+            )
+        stage_segments.append(tuple(segments))
+    return tuple(stage_segments)
 
 
 def _stage_layer_counts(num_layers: int, strategy) -> tuple[int, ...]:
@@ -103,13 +169,15 @@ def _contiguous_stage_groups(world_size: int, pp_size: int) -> tuple[tuple[int, 
     if world_size % pp_size != 0:
         raise ValueError("world_size must be divisible by pipeline_model_parallel_size")
     stage_group_size = world_size // pp_size
-    stage_groups = []
-    rank_start = 0
-    for _ in range(pp_size):
-        rank_end = rank_start + stage_group_size
-        stage_groups.append(tuple(range(rank_start, rank_end)))
-        rank_start = rank_end
-    return tuple(stage_groups)
+    return tuple(
+        tuple(range(offset, offset + stage_group_size))
+        for offset in range(0, world_size, stage_group_size)
+    )
 
 
-__all__ = ["build_execution_contract", "lower_strategy_to_plan"]
+def _uses_vpp(strategy) -> bool:
+    chunk_layers = strategy.get("num_layers_per_virtual_pipeline_stage")
+    return isinstance(chunk_layers, int) and chunk_layers > 0
+
+
+__all__ = ["build_execution_contract", "lower_strategy_to_plan", "summarize_plan"]

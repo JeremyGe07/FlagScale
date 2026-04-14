@@ -58,6 +58,7 @@ def _validate_stage_segments(plan: ModelPlan) -> None:
 def _ensure_stage_segments_are_valid(stage: StagePlan, total_layers: int | None) -> None:
     previous_end: int | None = None
     previous_start: int | None = None
+    allow_stage_gaps = _allows_stage_segment_gaps(stage)
     for segment in stage.segments:
         _ensure_segment_bounds(stage.stage_id, segment, total_layers)
         if previous_start is not None and segment.start < previous_start:
@@ -66,7 +67,7 @@ def _ensure_stage_segments_are_valid(stage: StagePlan, total_layers: int | None)
             expected_start = previous_end + 1
             if segment.start < expected_start:
                 raise ValueError(f"stage {stage.stage_id} segment overlap detected")
-            if segment.start > expected_start:
+            if segment.start > expected_start and not allow_stage_gaps:
                 raise ValueError(f"stage {stage.stage_id} segment gap detected")
         previous_start = segment.start
         previous_end = segment.end
@@ -80,7 +81,10 @@ def _ensure_segment_bounds(stage_id: int, segment: SegmentPlan, total_layers: in
 
 
 def _validate_global_coverage(plan: ModelPlan) -> None:
-    flattened_segments = [segment for stage in plan.stages for segment in stage.segments]
+    flattened_segments = sorted(
+        (segment for stage in plan.stages for segment in stage.segments),
+        key=lambda segment: (segment.start, segment.end),
+    )
     if not flattened_segments:
         return
     previous_end: int | None = None
@@ -184,8 +188,7 @@ def _required_parallel_ranks(strategy: dict[str, object]) -> int:
     dp_size = _required_strategy_int(strategy, ("data_parallel_size", "dp"))
     tp_size = _required_strategy_int(strategy, ("tensor_model_parallel_size", "tp"))
     cp_size = _required_strategy_int(strategy, ("context_parallel_size", "cp"))
-    ep_size = _required_strategy_int(strategy, ("expert_model_parallel_size", "ep"))
-    return dp_size * tp_size * cp_size * ep_size
+    return dp_size * tp_size * cp_size
 
 
 def _validate_device_group_ranks(
@@ -217,6 +220,13 @@ def _strategy_int(strategy: dict[str, object], keys: tuple[str, ...]) -> int | N
         if isinstance(value, int):
             return value
     return None
+
+
+def _allows_stage_segment_gaps(stage: StagePlan) -> bool:
+    if not stage.segments:
+        return False
+    value = stage.segments[0].strategy.get("num_layers_per_virtual_pipeline_stage")
+    return isinstance(value, int) and value > 0
 
 
 __all__ = ["PlanValidationResult", "validate_model_plan"]
