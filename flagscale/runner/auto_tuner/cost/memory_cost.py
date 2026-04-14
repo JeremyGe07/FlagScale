@@ -66,9 +66,16 @@ def _estimate_plan_memory_cost(plan, config):
         return result
     plan_breakdown = _build_plan_memory_breakdown(plan, config)
     memory_total_mb = plan_breakdown["peak_combined_memory_total_mb"]
+    peak_stage_breakdown = _peak_combined_stage_breakdown(plan_breakdown)
     breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
+    breakdown["parameters_mb"] = peak_stage_breakdown["parameters_mb"]
+    breakdown["model_states_mb"] = peak_stage_breakdown["model_states_mb"]
+    breakdown["recompute_saved_mb"] = peak_stage_breakdown["recompute_saved_mb"]
     breakdown["peak_mb"] = plan_breakdown["peak_combined_peak_mb"]
-    breakdown["activations_mb"] = plan_breakdown["peak_combined_peak_mb"]
+    breakdown["activations_mb"] = max(
+        breakdown["peak_mb"] - breakdown["model_states_mb"],
+        0.0,
+    )
     breakdown["reserved_mb"] = plan_breakdown["peak_combined_reserved_mb"]
     breakdown["plan"] = plan_breakdown
     return {"memory_total_mb": memory_total_mb, "memory_breakdown": breakdown}
@@ -330,6 +337,16 @@ def _peak_combined_stage(stages, transitions):
             peak_transition_mb = transition_mb
             peak_total_mb = total_mb
     return peak_stage, peak_transition_mb
+
+
+def _peak_combined_stage_breakdown(plan_breakdown):
+    peak_stage_id = plan_breakdown["peak_combined_stage_id"]
+    if peak_stage_id is None:
+        return deepcopy(DEFAULT_MEMORY_BREAKDOWN)
+    for stage in plan_breakdown["stages"]:
+        if stage["stage_id"] == peak_stage_id:
+            return deepcopy(stage["memory_breakdown"])
+    return deepcopy(DEFAULT_MEMORY_BREAKDOWN)
 
 
 def _config_with_num_layers(config, num_layers):

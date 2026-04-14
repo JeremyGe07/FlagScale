@@ -162,14 +162,15 @@ def _estimate_transition_time(spec, config):
     )
     source_bytes = _activation_bytes(source_profile)
     target_bytes = _activation_bytes(target_profile)
-    bandwidth_gbps, latency_us, fabric = _transition_link(source_profile, target_profile)
-    transition_ms = _transfer_ms(
-        max(source_bytes, target_bytes) * _transition_factor(spec),
-        bandwidth_gbps,
-        latency_us,
-        _transition_repetitions(spec),
+    payload_bytes = max(source_bytes, target_bytes) * _transition_factor(spec)
+    repetitions = _transition_repetitions(spec)
+    bandwidth_gbps, latency_us, fabric = _transition_link(
+        source_profile,
+        target_profile,
+        payload_bytes=payload_bytes,
+        repetitions=repetitions,
     )
-    transition_ms *= FABRIC_PENALTIES.get(str(fabric).lower(), DEFAULT_FABRIC_PENALTY)
+    transition_ms = _link_transfer_ms((bandwidth_gbps, latency_us, fabric), payload_bytes, repetitions)
     return {
         "source_stage_id": spec["source_stage_id"],
         "target_stage_id": spec["target_stage_id"],
@@ -181,21 +182,25 @@ def _estimate_transition_time(spec, config):
     }
 
 
-def _transition_link(source_profile, target_profile):
+def _transition_link(source_profile, target_profile, payload_bytes, repetitions):
     return _slower_link(
         _communication_link(source_profile, "pp", "p2p"),
         _communication_link(target_profile, "pp", "p2p"),
+        payload_bytes=payload_bytes,
+        repetitions=repetitions,
     )
 
 
-def _slower_link(source_link, target_link):
-    if source_link[0] != target_link[0]:
-        return source_link if source_link[0] < target_link[0] else target_link
-    if source_link[1] != target_link[1]:
-        return source_link if source_link[1] > target_link[1] else target_link
-    source_penalty = FABRIC_PENALTIES.get(str(source_link[2]).lower(), DEFAULT_FABRIC_PENALTY)
-    target_penalty = FABRIC_PENALTIES.get(str(target_link[2]).lower(), DEFAULT_FABRIC_PENALTY)
-    return source_link if source_penalty >= target_penalty else target_link
+def _slower_link(source_link, target_link, payload_bytes, repetitions):
+    source_ms = _link_transfer_ms(source_link, payload_bytes, repetitions)
+    target_ms = _link_transfer_ms(target_link, payload_bytes, repetitions)
+    return source_link if source_ms >= target_ms else target_link
+
+
+def _link_transfer_ms(link, payload_bytes, repetitions):
+    bandwidth_gbps, latency_us, fabric = link
+    transfer_ms = _transfer_ms(payload_bytes, bandwidth_gbps, latency_us, repetitions)
+    return transfer_ms * FABRIC_PENALTIES.get(str(fabric).lower(), DEFAULT_FABRIC_PENALTY)
 
 
 def _transition_factor(spec):

@@ -592,11 +592,26 @@ def test_transition_link_uses_slower_source_or_target_profile(tmp_path):
     bandwidth_gbps, latency_us, fabric = time_cost_module._transition_link(
         source_profile,
         target_profile,
+        payload_bytes=1024.0,
+        repetitions=1.0,
     )
 
     assert bandwidth_gbps == pytest.approx(24.0)
     assert latency_us == pytest.approx(10.0)
     assert fabric == "host_device"
+
+
+def test_slower_link_selection_accounts_for_payload_and_latency():
+    time_cost_module = importlib.import_module("flagscale.runner.auto_tuner.cost.time_cost")
+
+    slower = time_cost_module._slower_link(
+        (10.0, 1.0, "nvlink"),
+        (20.0, 5000.0, "pcie"),
+        payload_bytes=1024.0,
+        repetitions=1.0,
+    )
+
+    assert slower == (20.0, 5000.0, "pcie")
 
 
 def test_hetero_top_level_memory_breakdown_keeps_reserved_bias_consistent(tmp_path):
@@ -634,4 +649,9 @@ def test_hetero_top_level_memory_breakdown_keeps_reserved_bias_consistent(tmp_pa
     breakdown = result["memory_breakdown"]
 
     assert breakdown["reserved_mb"] == pytest.approx(512.0)
+    assert breakdown["parameters_mb"] > 0
+    assert breakdown["model_states_mb"] > 0
+    assert breakdown["peak_mb"] == pytest.approx(
+        breakdown["model_states_mb"] + breakdown["activations_mb"]
+    )
     assert breakdown["peak_mb"] + breakdown["reserved_mb"] == pytest.approx(result["memory_total_mb"])
