@@ -61,9 +61,9 @@ def _estimate_plan_memory_cost(plan, config):
         result["memory_breakdown"]["plan"] = _build_plan_memory_breakdown(plan, config)
         return result
     plan_breakdown = _build_plan_memory_breakdown(plan, config)
-    memory_total_mb = max(
-        plan_breakdown["peak_stage_memory_total_mb"],
-        plan_breakdown["peak_transition_memory_mb"],
+    memory_total_mb = (
+        plan_breakdown["peak_stage_memory_total_mb"]
+        + plan_breakdown["peak_transition_memory_mb"]
     )
     breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
     breakdown["peak_mb"] = memory_total_mb

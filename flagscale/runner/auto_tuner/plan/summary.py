@@ -42,7 +42,7 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
 
 
 def extract_homogeneous_strategy(plan: ModelPlan) -> dict[str, object] | None:
-    if not plan.stages:
+    if not plan.stages or plan.transitions:
         return None
     stage_segments = [segment for stage in plan.stages for segment in stage.segments]
     if not stage_segments:

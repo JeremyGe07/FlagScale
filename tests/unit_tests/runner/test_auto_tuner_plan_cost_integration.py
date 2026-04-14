@@ -279,6 +279,7 @@ def test_plan_memory_breakdown_includes_transition_memory_estimates(tmp_path):
     assert len(transitions) == 2
     assert transitions[0]["memory_mb"] > 0
     assert transitions[1]["memory_mb"] > transitions[0]["memory_mb"]
+    assert result["memory_total_mb"] > result["memory_breakdown"]["plan"]["peak_stage_memory_total_mb"]
 
 
 def test_plan_time_breakdown_uses_explicit_transition_metadata(tmp_path):
@@ -344,6 +345,9 @@ def test_plan_time_breakdown_uses_explicit_transition_metadata(tmp_path):
     assert len(transitions) == 2
     assert transitions[0]["time_ms"] > 0
     assert transitions[1]["time_ms"] > transitions[0]["time_ms"]
+    assert result["time_total_ms"] > max(
+        stage["time_total_ms"] for stage in result["time_breakdown"]["plan"]["stages"]
+    )
 
 
 def test_build_cost_profile_keeps_segment_strategy_and_transition_metadata(tmp_path):

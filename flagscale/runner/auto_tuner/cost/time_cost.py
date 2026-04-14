@@ -71,6 +71,11 @@ def _estimate_plan_time_cost(plan, config):
         result["time_breakdown"]["plan"] = _build_plan_time_breakdown(plan, config)
         return result
     plan_breakdown = _build_plan_time_breakdown(plan, config)
+    inter_stage_transitions = [
+        transition
+        for transition in plan_breakdown["transitions"]
+        if transition["source_stage_id"] != transition["target_stage_id"]
+    ]
     breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
     peak_stage = max(
         plan_breakdown["stages"],
@@ -80,27 +85,37 @@ def _estimate_plan_time_cost(plan, config):
     if peak_stage is not None:
         for key in DEFAULT_TIME_BREAKDOWN:
             breakdown[key] = peak_stage["time_breakdown"][key]
-    breakdown["pp_comm_ms"] += sum(item["time_ms"] for item in plan_breakdown["transitions"])
+    breakdown["pp_comm_ms"] += sum(
+        item["time_ms"] for item in inter_stage_transitions
+    )
     time_total_ms = sum(breakdown.values())
     breakdown["plan"] = plan_breakdown
     return {"time_total_ms": time_total_ms, "time_breakdown": breakdown}
 
 
 def _build_plan_time_breakdown(plan, config):
-    stages = [_build_stage_time(stage, config) for stage in plan.stages]
     transitions = _build_transition_breakdown(plan, config)
+    stages = [_build_stage_time(stage, config, transitions) for stage in plan.stages]
     return {"stages": stages, "transitions": transitions}
 
 
-def _build_stage_time(stage, config):
+def _build_stage_time(stage, config, transitions):
     segments = [_build_segment_time(segment, config) for segment in stage.segments]
     breakdown = deepcopy(DEFAULT_TIME_BREAKDOWN)
     for segment in segments:
         _accumulate_breakdown(breakdown, segment["time_breakdown"])
+    local_transition_ms = sum(
+        transition["time_ms"]
+        for transition in transitions
+        if transition["source_stage_id"] == stage.stage_id
+        and transition["target_stage_id"] == stage.stage_id
+    )
+    breakdown["pp_comm_ms"] += local_transition_ms
     return {
         "stage_id": stage.stage_id,
         "device_group": list(stage.device_group),
-        "time_total_ms": sum(segment["time_total_ms"] for segment in segments),
+        "time_total_ms": sum(segment["time_total_ms"] for segment in segments)
+        + local_transition_ms,
         "time_breakdown": breakdown,
         "segments": segments,
     }
