@@ -14,6 +14,7 @@ from flagscale.runner.auto_tuner.plan.schema import (
     TransitionPlan,
 )
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
+from flagscale.runner.auto_tuner.record.recorder import Recorder
 
 
 def _build_chip_profile():
@@ -512,3 +513,58 @@ def test_explicit_segment_transition_targets_single_boundary(tmp_path):
 
     assert targeted_memory["memory_mb"] > untouched_memory["memory_mb"]
     assert targeted_time["time_ms"] > untouched_time["time_ms"]
+
+
+def test_recorder_persists_nested_transition_metadata_in_plan_cost_breakdowns(tmp_path):
+    config = _make_config(tmp_path, num_layers=8, global_batch_size=8, cards=4)
+    plan = ModelPlan(
+        stages=(
+            StagePlan(
+                stage_id=0,
+                device_group=(0, 1),
+                segments=(SegmentPlan(start=0, end=3, strategy=_strategy()),),
+            ),
+            StagePlan(
+                stage_id=1,
+                device_group=(2, 3),
+                segments=(SegmentPlan(start=4, end=7, strategy=_strategy()),),
+            ),
+        ),
+        transitions=(
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=1,
+                kind="pipeline",
+                metadata={"labels": {"a", "b"}, "attrs": {"mode": "stage"}},
+            ),
+        ),
+        contract=ExecutionContract(
+            world_size=4,
+            micro_batch_size=2,
+            gradient_accumulation_steps=4,
+            global_batch_size=8,
+        ),
+        total_layers=8,
+    )
+
+    memory_result = estimate_memory_cost(plan, config)
+    time_result = estimate_time_cost(plan, config)
+    (tmp_path / "auto_tuner").mkdir()
+    recorder = Recorder(config)
+    recorder.save(
+        [
+            {
+                "idx": 1,
+                "performance": 1.0,
+                "memory_total_mb": memory_result["memory_total_mb"],
+                "memory_breakdown": memory_result["memory_breakdown"],
+                "time_total_ms": time_result["time_total_ms"],
+                "time_breakdown": time_result["time_breakdown"],
+            }
+        ]
+    )
+
+    history = recorder.read()
+
+    assert history[0]["memory_breakdown"]["plan"]["transitions"][0]["metadata"]["attrs"]["mode"] == "stage"
+    assert history[0]["time_breakdown"]["plan"]["transitions"][0]["metadata"]["attrs"]["mode"] == "stage"

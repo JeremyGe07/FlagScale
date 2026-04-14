@@ -3,13 +3,13 @@ from collections.abc import Mapping, Sequence, Set
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 
 
-def _json_safe(value):
+def to_json_safe(value):
     if isinstance(value, Mapping):
-        return {key: _json_safe(item) for key, item in value.items()}
+        return {key: to_json_safe(item) for key, item in value.items()}
     if isinstance(value, Set):
-        return [_json_safe(item) for item in sorted(value, key=repr)]
+        return [to_json_safe(item) for item in sorted(value, key=repr)]
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [_json_safe(item) for item in value]
+        return [to_json_safe(item) for item in value]
     return value
 
 
@@ -34,7 +34,7 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
                     {
                         "start": segment.start,
                         "end": segment.end,
-                        "strategy": _json_safe(dict(segment.strategy)),
+                        "strategy": to_json_safe(dict(segment.strategy)),
                     }
                     for segment in stage.segments
                 ],
@@ -48,7 +48,7 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
                 "kind": transition.kind,
                 "source_segment_index": transition.source_segment_index,
                 "target_segment_index": transition.target_segment_index,
-                "metadata": _json_safe(dict(transition.metadata)),
+                "metadata": to_json_safe(dict(transition.metadata)),
             }
             for transition in plan.transitions
         ],
@@ -68,4 +68,4 @@ def extract_homogeneous_strategy(plan: ModelPlan) -> dict[str, object] | None:
     return strategy
 
 
-__all__ = ["extract_homogeneous_strategy", "summarize_plan"]
+__all__ = ["extract_homogeneous_strategy", "summarize_plan", "to_json_safe"]

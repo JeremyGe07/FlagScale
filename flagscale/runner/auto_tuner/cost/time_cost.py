@@ -4,7 +4,7 @@ from math import log2
 from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
-from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy
+from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy, to_json_safe
 
 BF16_BYTES = 2.0
 BITS_PER_BYTE = 8.0
@@ -176,7 +176,7 @@ def _estimate_transition_time(spec, config):
         "source_segment_index": spec["source_segment_index"],
         "target_segment_index": spec["target_segment_index"],
         "kind": spec["kind"],
-        "metadata": dict(spec["metadata"]),
+        "metadata": to_json_safe(dict(spec["metadata"])),
         "time_ms": transition_ms,
     }
 

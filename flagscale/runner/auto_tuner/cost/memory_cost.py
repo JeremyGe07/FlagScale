@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from flagscale.runner.auto_tuner.chip_profile import get_chip_profile_or_none
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
-from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy
+from flagscale.runner.auto_tuner.plan.summary import extract_homogeneous_strategy, to_json_safe
 from flagscale.runner.auto_tuner.utils import normalize_moe_layer_freq
 from flagscale.train.theoretical_memory_usage import (
     NUM_BYTES_IN_MEGABYTE,
@@ -169,7 +169,7 @@ def _estimate_transition_memory(spec, config):
         "source_segment_index": spec["source_segment_index"],
         "target_segment_index": spec["target_segment_index"],
         "kind": spec["kind"],
-        "metadata": dict(spec["metadata"]),
+        "metadata": to_json_safe(dict(spec["metadata"])),
         "memory_mb": max(source_mb, target_mb) * factor,
     }
 
