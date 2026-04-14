@@ -1,6 +1,7 @@
 from dataclasses import FrozenInstanceError
 import importlib
 import sys
+import types
 
 import pytest
 
@@ -23,10 +24,48 @@ def _load_plan_types():
     )
 
 
+def _import_auto_tuner_module():
+    sys.modules.pop("flagscale.runner.auto_tuner", None)
+    return importlib.import_module("flagscale.runner.auto_tuner")
+
+
 def test_importing_plan_module_does_not_load_tuner():
     _import_plan_module()
 
     assert "flagscale.runner.auto_tuner.tuner" not in sys.modules
+
+
+def test_auto_tuner_dir_does_not_duplicate_lazy_exports(monkeypatch):
+    tuner_module = types.ModuleType("flagscale.runner.auto_tuner.tuner")
+    tuner_module.AutoTuner = object()
+    tuner_module.ServeAutoTunner = object()
+    monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.tuner", tuner_module)
+
+    auto_tuner_module = _import_auto_tuner_module()
+    auto_tuner_module.AutoTuner
+
+    exported_names = dir(auto_tuner_module)
+    assert exported_names.count("AutoTuner") == 1
+    assert exported_names.count("ServeAutoTunner") == 1
+
+
+def test_from_auto_tuner_imports_lazy_exports(monkeypatch):
+    tuner_module = types.ModuleType("flagscale.runner.auto_tuner.tuner")
+    auto_tuner = object()
+    serve_auto_tunner = object()
+    tuner_module.AutoTuner = auto_tuner
+    tuner_module.ServeAutoTunner = serve_auto_tunner
+    monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.tuner", tuner_module)
+    sys.modules.pop("flagscale.runner.auto_tuner", None)
+
+    namespace: dict[str, object] = {}
+    exec(
+        "from flagscale.runner.auto_tuner import AutoTuner, ServeAutoTunner",
+        namespace,
+    )
+
+    assert namespace["AutoTuner"] is auto_tuner
+    assert namespace["ServeAutoTunner"] is serve_auto_tunner
 
 
 def test_model_plan_accepts_multi_segment_stage():
