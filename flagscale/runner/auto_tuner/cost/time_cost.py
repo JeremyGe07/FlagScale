@@ -150,14 +150,14 @@ def _accumulate_breakdown(target, source):
 
 
 def _estimate_transition_time(spec, config):
-    source_strategy = _segment_strategy(spec["source_strategy"], spec["source_layer_count"])
-    target_strategy = _segment_strategy(spec["target_strategy"], spec["target_layer_count"])
+    source_strategy = _transition_strategy(spec["source_strategy"], spec["source_layer_count"])
+    target_strategy = _transition_strategy(spec["target_strategy"], spec["target_layer_count"])
     source_profile = build_cost_profile(
-        _config_with_num_layers(config, spec["source_layer_count"]),
+        _transition_config(config, source_strategy, spec["source_layer_count"]),
         source_strategy,
     )
     target_profile = build_cost_profile(
-        _config_with_num_layers(config, spec["target_layer_count"]),
+        _transition_config(config, target_strategy, spec["target_layer_count"]),
         target_strategy,
     )
     source_bytes = _activation_bytes(source_profile)
@@ -313,6 +313,21 @@ def _resolve_transition_index(stage, index, default_index):
     if index is None:
         return len(stage.segments) + default_index if default_index < 0 else default_index
     return index
+
+
+def _transition_config(config, strategy, layer_count):
+    transition_config = _config_with_num_layers(config, layer_count)
+    transition_config.train.model.num_layers = max(
+        layer_count,
+        int(strategy["pipeline_model_parallel_size"]),
+    )
+    return transition_config
+
+
+def _transition_strategy(strategy, num_layers):
+    transition_strategy = _segment_strategy(strategy, num_layers)
+    transition_strategy["pipeline_model_parallel_size"] = strategy["pipeline_model_parallel_size"]
+    return transition_strategy
 
 
 def _config_with_num_layers(config, num_layers):

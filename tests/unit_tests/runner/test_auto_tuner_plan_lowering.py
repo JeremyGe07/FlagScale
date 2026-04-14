@@ -1,4 +1,5 @@
 import importlib
+import json
 
 from omegaconf import OmegaConf
 
@@ -134,6 +135,25 @@ def test_lower_strategy_to_plan_builds_two_stage_plan_for_pp2(tmp_path):
     assert result.runtime_mode == "stage-executable"
 
 
+def test_lower_strategy_to_plan_handles_odd_pp2_without_explicit_edge_sizes(tmp_path):
+    _, lower_strategy_to_plan, _, validate_model_plan, _, _ = _load_lowering_types()
+    config = _make_config(tmp_path, num_layers=9, global_batch_size=8, cards=4)
+
+    plan = lower_strategy_to_plan(
+        _strategy(
+            pipeline_model_parallel_size=2,
+            data_parallel_size=1,
+        ),
+        config,
+    )
+    result = validate_model_plan(plan)
+
+    spans = [(stage.segments[0].start, stage.segments[0].end) for stage in plan.stages]
+
+    assert spans == [(0, 3), (4, 8)]
+    assert result.runtime_mode == "stage-executable"
+
+
 def test_lower_strategy_to_plan_honors_decoder_first_and_last_stage_sizes(tmp_path):
     _, lower_strategy_to_plan, _, validate_model_plan, _, _ = _load_lowering_types()
     config = _make_config(tmp_path, num_layers=10, global_batch_size=8, cards=3)
@@ -180,6 +200,32 @@ def test_lower_strategy_to_plan_builds_interleaved_segments_for_vpp(tmp_path):
     ]
     assert result.runtime_mode == "analysis-only"
     assert summary["vpp_stage_segment_counts"] == [3, 3, 3]
+
+
+def test_summarize_plan_is_json_safe_for_frozen_nested_values(tmp_path):
+    _, lower_strategy_to_plan, summarize_plan, _, _, _ = _load_lowering_types()
+    config = _make_config(tmp_path, num_layers=8, cards=2)
+    plan = lower_strategy_to_plan(_strategy(data_parallel_size=2), config)
+
+    stage = plan.stages[0]
+    plan_with_metadata = plan.__class__(
+        stages=plan.stages,
+        transitions=(
+            importlib.import_module("flagscale.runner.auto_tuner.plan.schema").TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=0,
+                kind="note",
+                metadata={"labels": {"a", "b"}},
+            ),
+        ),
+        contract=plan.contract,
+        total_layers=plan.total_layers,
+    )
+
+    summary = summarize_plan(plan_with_metadata)
+
+    assert stage.segments[0].strategy["data_parallel_size"] == 2
+    json.dumps(summary)
 
 
 def test_lower_strategy_to_plan_accepts_reasonable_expert_parallel_strategy(tmp_path):

@@ -1,6 +1,16 @@
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 
 
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return [_json_safe(item) for item in sorted(value, key=repr)]
+    return value
+
+
 def summarize_plan(plan: ModelPlan) -> dict[str, object]:
     return {
         "total_layers": plan.total_layers,
@@ -22,7 +32,7 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
                     {
                         "start": segment.start,
                         "end": segment.end,
-                        "strategy": dict(segment.strategy),
+                        "strategy": _json_safe(dict(segment.strategy)),
                     }
                     for segment in stage.segments
                 ],
@@ -36,7 +46,7 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
                 "kind": transition.kind,
                 "source_segment_index": transition.source_segment_index,
                 "target_segment_index": transition.target_segment_index,
-                "metadata": dict(transition.metadata),
+                "metadata": _json_safe(dict(transition.metadata)),
             }
             for transition in plan.transitions
         ],

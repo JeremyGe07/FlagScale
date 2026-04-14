@@ -114,6 +114,8 @@ def _stage_layer_counts(num_layers: int, strategy) -> tuple[int, ...]:
     if first_layers is None and last_layers is None and num_layers % pp_size == 0:
         return tuple([num_layers // pp_size] * pp_size)
     if pp_size == 2:
+        if first_layers is None and last_layers is None:
+            first_layers, last_layers = _default_edge_layer_counts(num_layers, pp_size)
         first_layers = num_layers - last_layers if first_layers is None else first_layers
         last_layers = num_layers - first_layers
         return (first_layers, last_layers)
