@@ -8,6 +8,9 @@ from flagscale.runner.auto_tuner.search.pp_first_partition import (
     generate_partition_candidates,
     is_power_of_two,
 )
+from flagscale.runner.auto_tuner.search.pp_first_assignment import (
+    generate_assignment_candidates,
+)
 from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
 from flagscale.runner.auto_tuner.tuner import AutoTuner
 
@@ -131,6 +134,22 @@ def test_generate_partition_candidates_rejects_unknown_policy():
         )
 
 
+def test_generate_assignment_candidates_honors_fixed_pp_and_budget(tmp_path):
+    config = _config(tmp_path)
+    searcher = PPFirstSearcher(config)
+
+    assignments = generate_assignment_candidates(
+        searcher=searcher,
+        space=searcher.space,
+        config=config,
+        pp_degree=2,
+        max_assignments=3,
+    )
+
+    assert len(assignments) == 3
+    assert {assignment["pipeline_model_parallel_size"] for assignment in assignments} == {2}
+
+
 def test_pp_first_searcher_limits_pipeline_candidates_to_power_of_two(tmp_path):
     searcher = PPFirstSearcher(_config(tmp_path))
 
@@ -171,6 +190,9 @@ def test_pp_first_searcher_injects_partition_metadata(tmp_path):
     assert isinstance(first["estimated_stage_costs"], list)
     assert first["partition_candidate_count"] == 1
     assert first["assignment_candidate_rank"] == 0
+    assert "runtime_executable" in first["legality_flags"]
+    assert any(flag.startswith("plan_kind:") for flag in first["legality_flags"])
+    assert any(flag.startswith("runtime_mode:") for flag in first["legality_flags"])
 
 
 def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):

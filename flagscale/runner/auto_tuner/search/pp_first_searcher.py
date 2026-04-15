@@ -1,9 +1,10 @@
-import copy
-
 from flagscale.runner.auto_tuner.search.algorithm import (
     GridAlgo,
     sort_by_chip_score,
     sort_by_time_cost,
+)
+from flagscale.runner.auto_tuner.search.pp_first_assignment import (
+    generate_assignment_candidates,
 )
 from flagscale.runner.auto_tuner.search.searcher import Searcher
 from flagscale.runner.auto_tuner.search.pp_first_partition import (
@@ -54,11 +55,15 @@ class PPFirstSearcher(Searcher):
                 max_partitions=max_partitions,
             )
             for partition_index, partition in enumerate(partitions):
-                partition_space = copy.deepcopy(space)
-                partition_space["pipeline_model_parallel_size"] = [pp_degree]
-                partition_strategies = super().build_strategies(partition_space, config)
+                partition_strategies = generate_assignment_candidates(
+                    searcher=self,
+                    space=space,
+                    config=config,
+                    pp_degree=pp_degree,
+                    max_assignments=max_assignments,
+                )
                 for assignment_index, strategy in enumerate(
-                    partition_strategies[:max_assignments]
+                    partition_strategies
                 ):
                     strategy["partition_policy"] = partition.partition_policy
                     strategy["topology_signature"] = partition.topology_signature
@@ -105,6 +110,7 @@ class PPFirstSearcher(Searcher):
             strategy["estimated_stage_costs"] = _build_estimated_stage_costs(strategy)
             strategy["short_run_candidate"] = id(strategy) in short_run_ids
             strategy["short_run_shortlist_count"] = shortlist_count
+            strategy["legality_flags"] = _build_legality_flags(strategy)
 
     def build_algo(self, strategies, config):
         shortlist = _build_short_run_shortlist(strategies, config)
@@ -185,6 +191,21 @@ def _build_estimated_stage_costs(strategy):
             }
         )
     return stage_costs
+
+
+def _build_legality_flags(strategy):
+    flags = set(strategy.get("legality_flags", []))
+    plan_kind = strategy.get("plan_kind")
+    runtime_mode = strategy.get("runtime_mode")
+    if plan_kind:
+        flags.add(f"plan_kind:{plan_kind}")
+    if runtime_mode:
+        flags.add(f"runtime_mode:{runtime_mode}")
+    if strategy.get("runtime_executable", False):
+        flags.add("runtime_executable")
+    else:
+        flags.add("analysis_only")
+    return sorted(flags)
 
 
 __all__ = ["PPFirstSearcher"]
