@@ -267,6 +267,21 @@ def test_pp_first_searcher_prefers_time_cost_when_profiled_time_enabled(tmp_path
     assert all("time_cost" in strategy for strategy in searcher.short_run_strategies)
 
 
+def test_pp_first_searcher_reads_vocab_size_from_tokenizer_when_model_padded_vocab_missing(tmp_path):
+    config = _config(tmp_path)
+    del config.train.model["padded_vocab_size"]
+    config.train.data = {"tokenizer": {"vocab_size": 32000}}
+    config.experiment.auto_tuner.planner = {
+        "name": "pp_first",
+        "partition_policy": [POLICY_PARAM_BALANCED],
+    }
+
+    searcher = PPFirstSearcher(config)
+
+    assert searcher.strategies
+    assert all(strategy["partition_policy"] == POLICY_PARAM_BALANCED for strategy in searcher.strategies)
+
+
 def test_auto_tuner_uses_pp_first_searcher_when_planner_enabled(tmp_path):
     config = _config(tmp_path)
     config.experiment.auto_tuner.planner = {"name": "pp_first"}

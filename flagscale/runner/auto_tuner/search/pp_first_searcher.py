@@ -38,8 +38,7 @@ class PPFirstSearcher(Searcher):
         planner_cfg = _planner_cfg(config)
         world_size = config.experiment.auto_tuner.cards
         num_layers = config.train.model.num_layers
-        hidden_size = config.train.model.hidden_size
-        padded_vocab_size = config.train.model.padded_vocab_size
+        hidden_size, padded_vocab_size = _resolve_param_balanced_model_meta(config)
         max_partitions = planner_cfg.get(
             "max_partitions_per_pp", DEFAULT_MAX_PARTITIONS_PER_PP
         )
@@ -210,6 +209,21 @@ def _build_legality_flags(strategy):
     else:
         flags.add("analysis_only")
     return sorted(flags)
+
+
+def _resolve_param_balanced_model_meta(config):
+    hidden_size = int(config.train.model.hidden_size)
+    padded_vocab_size = config.train.model.get("padded_vocab_size")
+    tokenizer_cfg = config.train.get("data", {}).get("tokenizer", {})
+    if padded_vocab_size is None:
+        padded_vocab_size = tokenizer_cfg.get("padded_vocab_size")
+    if padded_vocab_size is None:
+        padded_vocab_size = tokenizer_cfg.get("vocab_size")
+    if padded_vocab_size is None:
+        raise ValueError(
+            "PP-first param_balanced policy requires padded_vocab_size or tokenizer vocab_size."
+        )
+    return hidden_size, int(padded_vocab_size)
 
 
 __all__ = ["PPFirstSearcher"]
