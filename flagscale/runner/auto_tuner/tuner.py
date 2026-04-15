@@ -22,6 +22,7 @@ from flagscale.runner.auto_tuner.platform import set_jiuding_platform_args
 from flagscale.runner.auto_tuner.prune.pruner import Pruner
 from flagscale.runner.auto_tuner.record.recorder import Recorder, ServeRecorder
 from flagscale.runner.auto_tuner.search.searcher import Searcher, ServeSearcher
+from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
 from flagscale.runner.runner_base import JobStatus
 from flagscale.runner.runner_serve import SSHServeRunner
 from flagscale.runner.runner_train import SSHTrainRunner
@@ -114,7 +115,7 @@ class AutoTuner:
             self.recorder = HeteroRecorder(self.config)
         else:
             self.logger.info("Initializing in Homogeneous Mode.")
-            self.searcher = Searcher(self.config)
+            self.searcher = self._build_homogeneous_searcher()
             self.pruner = Pruner(self.config)
             self.generator = Generator(self.config)
             self.recorder = Recorder(self.config)
@@ -181,6 +182,15 @@ class AutoTuner:
             "Heterogeneous auto_tuner does not support chip-aware configuration: "
             "remove auto_tuner.chip_profile and disable auto_tuner.algo.chip_aware_scoring."
         )
+
+    def _build_homogeneous_searcher(self):
+        planner_cfg = self.config.experiment.auto_tuner.get("planner", {})
+        planner_name = planner_cfg.get("name")
+        if planner_name is None:
+            return Searcher(self.config)
+        if planner_name == "pp_first":
+            return PPFirstSearcher(self.config)
+        raise ValueError(f"Unsupported auto_tuner planner: {planner_name}")
 
     def _sync_plan_metadata_from_task(self, strategy, task):
         if not OmegaConf.is_config(task):
