@@ -1,10 +1,16 @@
 import copy
 
+from flagscale.runner.auto_tuner.search.algorithm import (
+    GridAlgo,
+    sort_by_chip_score,
+    sort_by_time_cost,
+)
 from flagscale.runner.auto_tuner.search.searcher import Searcher
 from flagscale.runner.auto_tuner.search.pp_first_partition import (
     build_layer_count_balanced_partition,
     is_power_of_two,
 )
+from flagscale.runner.auto_tuner.utils import sort_by_memory_model
 
 DEFAULT_TOPK_PLANS_FOR_SHORT_RUN = 16
 DEFAULT_MAX_PP_CANDIDATES = 4
@@ -56,16 +62,39 @@ class PPFirstSearcher(Searcher):
 
     def _annotate_pp_first_metadata(self):
         topk = _planner_cfg(self.config).get("topk_plans_for_short_run", DEFAULT_TOPK_PLANS_FOR_SHORT_RUN)
+        short_run_ids = {id(strategy) for strategy in getattr(self, "short_run_strategies", [])}
         for rank, strategy in enumerate(self.strategies):
             strategy["planner_name"] = "pp_first"
             strategy["topk_plans_for_short_run"] = topk
-            strategy["short_run_candidate"] = rank < topk and bool(
-                strategy.get("runtime_executable", False)
-            )
+            strategy["short_run_candidate"] = id(strategy) in short_run_ids
+
+    def build_algo(self, strategies, config):
+        shortlist = _build_short_run_shortlist(strategies, config)
+        self.short_run_strategies = shortlist
+        return GridAlgo(shortlist, config)
 
 
 def _planner_cfg(config):
     return config.experiment.auto_tuner.get("planner", {})
+
+
+def _build_short_run_shortlist(strategies, config):
+    ranked = _sort_estimate_candidates(strategies, config)
+    topk = _planner_cfg(config).get("topk_plans_for_short_run", DEFAULT_TOPK_PLANS_FOR_SHORT_RUN)
+    executable = [strategy for strategy in ranked if strategy.get("runtime_executable", False)]
+    return executable[:topk]
+
+
+def _sort_estimate_candidates(strategies, config):
+    ranked = list(strategies)
+    algo_cfg = config.experiment.auto_tuner.algo
+    if algo_cfg.get("use_profiled_time_cost", False):
+        return sorted(ranked, key=sort_by_time_cost)
+    if algo_cfg.get("chip_aware_scoring", False):
+        return sorted(ranked, key=sort_by_chip_score, reverse=True)
+    if "memory_model" in config.experiment.auto_tuner:
+        return sorted(ranked, key=sort_by_memory_model, reverse=True)
+    return ranked
 
 
 __all__ = ["PPFirstSearcher"]

@@ -111,8 +111,9 @@ def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):
     searcher = PPFirstSearcher(config)
     marked = [s for s in searcher.strategies if s["short_run_candidate"]]
 
-    assert len(marked) <= 2
+    assert len(marked) == 2
     assert all(s["runtime_executable"] is True for s in marked)
+    assert len(searcher.short_run_strategies) == 2
 
 
 def test_auto_tuner_uses_pp_first_searcher_when_planner_enabled(tmp_path):

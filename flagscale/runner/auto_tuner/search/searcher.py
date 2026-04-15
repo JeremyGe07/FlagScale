@@ -134,7 +134,7 @@ class Searcher:
                 len(self.strategies), end_time - start_time
             )
         )
-        if self.__class__ is Searcher:
+        if self._should_inject_runtime_plan_metadata():
             self._inject_runtime_plan_metadata()
         self._inject_chip_scores(self.strategies, self.config)
 
@@ -148,6 +148,9 @@ class Searcher:
 
         # Build search algorithm to explore strategies
         self.algo = self.build_algo(self.strategies, self.config)
+
+    def _should_inject_runtime_plan_metadata(self):
+        return True
 
     def _validate_chip_aware_config(self, config, profile):
         if profile is not None:
