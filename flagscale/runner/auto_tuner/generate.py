@@ -3,8 +3,34 @@ import os
 
 from omegaconf import OmegaConf
 
+from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan, summarize_plan
+from flagscale.runner.auto_tuner.plan.summary import (
+    is_runtime_executable_plan,
+    plan_kind,
+    segment_count,
+    summarize_execution_contract,
+)
+from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
+
 
 class Generator:
+    _PLAN_STRATEGY_KEYS = (
+        "data_parallel_size",
+        "tensor_model_parallel_size",
+        "pipeline_model_parallel_size",
+        "micro_batch_size",
+        "acc_step",
+    )
+    _PLAN_METADATA_KEYS = (
+        "plan_kind",
+        "stage_count",
+        "segment_count",
+        "runtime_mode",
+        "runtime_executable",
+        "execution_contract",
+        "plan_summary",
+    )
+
 
     def __init__(self, config):
         self.config = config
@@ -57,6 +83,62 @@ class Generator:
     def _disable_validation(self, config):
         config.train.model.eval_iters = 0
 
+    def _build_plan_runtime_metadata(self, strategy, config):
+        if strategy.get("plan_summary") is not None:
+            missing = [key for key in self._PLAN_METADATA_KEYS if strategy.get(key) is None]
+            if missing:
+                raise ValueError(
+                    "strategy plan metadata is incomplete: missing {}".format(", ".join(missing))
+                )
+            runtime_executable = strategy.get("runtime_executable")
+            if not isinstance(runtime_executable, bool):
+                raise ValueError("strategy plan metadata runtime_executable must be bool")
+            return {
+                "plan_kind": strategy.get("plan_kind"),
+                "stage_count": strategy.get("stage_count"),
+                "segment_count": strategy.get("segment_count"),
+                "runtime_mode": strategy.get("runtime_mode"),
+                "runtime_executable": runtime_executable,
+                "execution_contract": strategy.get("execution_contract"),
+                "plan_summary": strategy.get("plan_summary"),
+            }
+        if not all(key in strategy for key in self._PLAN_STRATEGY_KEYS):
+            return None
+        plan = lower_strategy_to_plan(strategy, config)
+        validation = validate_model_plan(plan)
+        return {
+            "plan_kind": plan_kind(plan),
+            "stage_count": len(plan.stages),
+            "segment_count": segment_count(plan),
+            "runtime_mode": validation.runtime_mode,
+            "runtime_executable": is_runtime_executable_plan(plan),
+            "execution_contract": summarize_execution_contract(plan),
+            "plan_summary": summarize_plan(plan),
+        }
+
+    def _set_plan_metadata(self, strategy, config):
+        metadata = self._build_plan_runtime_metadata(strategy, config)
+        if metadata is None:
+            return
+        if not metadata["runtime_executable"]:
+            raise ValueError(
+                "{} plan is analysis-only and cannot enter executable generator path".format(
+                    metadata["plan_kind"]
+                )
+            )
+        config.experiment.auto_tuner.plan = OmegaConf.merge(
+            config.experiment.auto_tuner.get("plan", {}),
+            {
+                "plan_kind": metadata["plan_kind"],
+                "stage_count": metadata["stage_count"],
+                "segment_count": metadata["segment_count"],
+                "runtime_mode": metadata["runtime_mode"],
+                "runtime_executable": metadata["runtime_executable"],
+                "execution_contract": metadata["execution_contract"],
+                "plan_summary": metadata["plan_summary"],
+            },
+        )
+
     def gen(self, strategy):
         config = copy.deepcopy(self.config)
         self._set_value(strategy, config)
@@ -96,6 +178,7 @@ class Generator:
         # Set train_iters of each task and keep the scheduler valid for short autotune runs.
         self._set_auto_tune_train_iters(config)
         self._disable_validation(config)
+        self._set_plan_metadata(strategy, config)
 
         # log dir
         config.experiment.exp_dir = os.path.join(
@@ -106,6 +189,7 @@ class Generator:
 
     def gen_best_task(self, strategy, config):
         self._set_value(strategy, config)
+        self._set_plan_metadata(strategy, config)
         return config
 
 

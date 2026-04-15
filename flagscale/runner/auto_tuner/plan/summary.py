@@ -2,6 +2,11 @@ from collections.abc import Mapping, Sequence, Set
 
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
 
+HOMOGENEOUS_PLAN = "homogeneous"
+HOMOGENEOUS_VPP_PLAN = "homogeneous-vpp"
+STAGE_HETEROGENEOUS_PLAN = "stage-heterogeneous"
+SEGMENT_HETEROGENEOUS_PLAN = "segment-heterogeneous"
+
 
 def to_json_safe(value):
     if isinstance(value, Mapping):
@@ -55,6 +60,39 @@ def summarize_plan(plan: ModelPlan) -> dict[str, object]:
     }
 
 
+def summarize_execution_contract(plan: ModelPlan) -> dict[str, object]:
+    return {
+        "world_size": None if plan.contract is None else plan.contract.world_size,
+        "micro_batch_size": None if plan.contract is None else plan.contract.micro_batch_size,
+        "gradient_accumulation_steps": (
+            None if plan.contract is None else plan.contract.gradient_accumulation_steps
+        ),
+        "global_batch_size": None if plan.contract is None else plan.contract.global_batch_size,
+    }
+
+
+def segment_count(plan: ModelPlan) -> int:
+    return sum(len(stage.segments) for stage in plan.stages)
+
+
+def plan_kind(plan: ModelPlan) -> str:
+    homogeneous_strategy = extract_homogeneous_strategy(plan)
+    has_multi_segment_stage = any(len(stage.segments) > 1 for stage in plan.stages)
+    if homogeneous_strategy is not None:
+        return HOMOGENEOUS_VPP_PLAN if has_multi_segment_stage else HOMOGENEOUS_PLAN
+    if all(len(stage.segments) == 1 for stage in plan.stages):
+        return STAGE_HETEROGENEOUS_PLAN
+    return SEGMENT_HETEROGENEOUS_PLAN
+
+
+def is_runtime_executable_plan(plan: ModelPlan) -> bool:
+    return plan_kind(plan) in {
+        HOMOGENEOUS_PLAN,
+        HOMOGENEOUS_VPP_PLAN,
+        STAGE_HETEROGENEOUS_PLAN,
+    }
+
+
 def extract_homogeneous_strategy(plan: ModelPlan) -> dict[str, object] | None:
     if not plan.stages or plan.transitions:
         return None
@@ -68,4 +106,12 @@ def extract_homogeneous_strategy(plan: ModelPlan) -> dict[str, object] | None:
     return strategy
 
 
-__all__ = ["extract_homogeneous_strategy", "summarize_plan", "to_json_safe"]
+__all__ = [
+    "extract_homogeneous_strategy",
+    "is_runtime_executable_plan",
+    "plan_kind",
+    "segment_count",
+    "summarize_execution_contract",
+    "summarize_plan",
+    "to_json_safe",
+]

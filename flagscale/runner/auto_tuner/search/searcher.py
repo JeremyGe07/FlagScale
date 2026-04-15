@@ -12,6 +12,12 @@ from flagscale.runner.auto_tuner.chip_profile import attach_chip_profile, get_at
 from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
 from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan, summarize_plan
+from flagscale.runner.auto_tuner.plan.summary import (
+    is_runtime_executable_plan,
+    plan_kind,
+    segment_count,
+    summarize_execution_contract,
+)
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
@@ -396,8 +402,12 @@ class Searcher:
             plan = lower_strategy_to_plan(strategy, self.config)
             validation = validate_model_plan(plan)
             strategy["plan_summary"] = summarize_plan(plan)
+            strategy["plan_kind"] = plan_kind(plan)
+            strategy["stage_count"] = len(plan.stages)
+            strategy["segment_count"] = segment_count(plan)
+            strategy["execution_contract"] = summarize_execution_contract(plan)
             strategy["runtime_mode"] = validation.runtime_mode
-            strategy["runtime_executable"] = validation.runtime_mode == "stage-executable"
+            strategy["runtime_executable"] = is_runtime_executable_plan(plan)
 
     def _product_parallel_dims(self, space, config):
         # Avoid space explosion after product

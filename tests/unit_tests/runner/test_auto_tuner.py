@@ -13,7 +13,7 @@ def test_generator_clamps_lr_warmup_iters_for_short_auto_tune_runs(tmp_path):
         {
             "experiment": {
                 "exp_dir": str(tmp_path),
-                "runner": {},
+                "runner": {"nnodes": 1, "nproc_per_node": 1},
                 "auto_tuner": {
                     "args_mapping": {},
                     "control": {"train_iters": 3},
@@ -26,6 +26,11 @@ def test_generator_clamps_lr_warmup_iters_for_short_auto_tune_runs(tmp_path):
                 },
                 "model": {
                     "train_iters": 1000,
+                    "num_layers": 1,
+                    "global_batch_size": 1,
+                    "hidden_size": 8,
+                    "num_attention_heads": 1,
+                    "seq_length": 8,
                     "optimizer": {
                         "lr_scheduler": {
                             "lr": 1e-5,
@@ -51,7 +56,7 @@ def test_generator_disables_validation_for_auto_tune_tasks_without_zeroing_eval_
         {
             "experiment": {
                 "exp_dir": str(tmp_path),
-                "runner": {},
+                "runner": {"nnodes": 1, "nproc_per_node": 1},
                 "auto_tuner": {
                     "args_mapping": {},
                     "control": {"train_iters": 3},
@@ -63,6 +68,11 @@ def test_generator_disables_validation_for_auto_tune_tasks_without_zeroing_eval_
                     "checkpoint": {"save_interval": 100},
                 },
                 "model": {
+                    "num_layers": 1,
+                    "global_batch_size": 1,
+                    "hidden_size": 8,
+                    "num_attention_heads": 1,
+                    "seq_length": 8,
                     "eval_iters": 10,
                     "eval_interval": 100,
                     "optimizer": {
@@ -82,6 +92,378 @@ def test_generator_disables_validation_for_auto_tune_tasks_without_zeroing_eval_
     assert task.train.model.eval_interval == 100
 
 
+def test_generator_injects_plan_runtime_metadata_into_task_config(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {"nnodes": 1, "nproc_per_node": 1},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "num_layers": 8,
+                    "global_batch_size": 8,
+                    "hidden_size": 8,
+                    "num_attention_heads": 4,
+                    "seq_length": 16,
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    task = Generator(config).gen(
+        {
+            "idx": 1,
+            "data_parallel_size": 1,
+            "use_distributed_optimizer": False,
+            "tensor_model_parallel_size": 1,
+            "sequence_parallel": False,
+            "pipeline_model_parallel_size": 1,
+            "num_layers_per_virtual_pipeline_stage": None,
+            "recompute_method": None,
+            "recompute_granularity": None,
+            "recompute_num_layers": None,
+            "micro_batch_size": 2,
+            "context_parallel_size": 1,
+            "expert_model_parallel_size": 1,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
+            "acc_step": 4,
+        }
+    )
+
+    assert task.experiment.auto_tuner.plan.plan_kind == "homogeneous"
+    assert task.experiment.auto_tuner.plan.stage_count == 1
+    assert task.experiment.auto_tuner.plan.segment_count == 1
+    assert task.experiment.auto_tuner.plan.runtime_executable is True
+    assert task.experiment.auto_tuner.plan.execution_contract.global_batch_size == 8
+
+
+def test_generator_rejects_segment_heterogeneous_plan_execution(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="segment-heterogeneous"):
+        Generator(config).gen(
+            {
+                "idx": 1,
+                "data_parallel_size": 1,
+                "use_distributed_optimizer": False,
+                "tensor_model_parallel_size": 1,
+                "sequence_parallel": False,
+                "pipeline_model_parallel_size": 1,
+                "num_layers_per_virtual_pipeline_stage": None,
+                "recompute_method": None,
+                "recompute_granularity": None,
+                "recompute_num_layers": None,
+                "micro_batch_size": 2,
+                "context_parallel_size": 1,
+                "expert_model_parallel_size": 1,
+                "decoder_first_pipeline_num_layers": None,
+                "decoder_last_pipeline_num_layers": None,
+                "plan_kind": "segment-heterogeneous",
+                "stage_count": 2,
+                "segment_count": 4,
+                "runtime_mode": "analysis-only",
+                "runtime_executable": False,
+                "execution_contract": {
+                    "world_size": 2,
+                    "micro_batch_size": 2,
+                    "gradient_accumulation_steps": 4,
+                    "global_batch_size": 8,
+                },
+                "plan_summary": {
+                    "stage_count": 2,
+                    "vpp_stage_segment_counts": [2, 2],
+                    "contract": {"global_batch_size": 8},
+                },
+            }
+        )
+
+
+def test_generator_accepts_stage_heterogeneous_runtime_metadata(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    task = Generator(config).gen(
+        {
+            "idx": 1,
+            "data_parallel_size": 1,
+            "use_distributed_optimizer": False,
+            "tensor_model_parallel_size": 1,
+            "sequence_parallel": False,
+            "pipeline_model_parallel_size": 2,
+            "num_layers_per_virtual_pipeline_stage": None,
+            "recompute_method": None,
+            "recompute_granularity": None,
+            "recompute_num_layers": None,
+            "micro_batch_size": 2,
+            "context_parallel_size": 1,
+            "expert_model_parallel_size": 1,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
+            "plan_kind": "stage-heterogeneous",
+            "stage_count": 2,
+            "segment_count": 2,
+            "runtime_mode": "stage-executable",
+            "runtime_executable": True,
+            "execution_contract": {
+                "world_size": 2,
+                "micro_batch_size": 2,
+                "gradient_accumulation_steps": 4,
+                "global_batch_size": 8,
+            },
+            "plan_summary": {
+                "stage_count": 2,
+                "vpp_stage_segment_counts": [1, 1],
+                "contract": {"global_batch_size": 8},
+            },
+        }
+    )
+
+    assert task.experiment.auto_tuner.plan.plan_kind == "stage-heterogeneous"
+    assert task.experiment.auto_tuner.plan.runtime_executable is True
+
+
+def test_generator_rejects_incomplete_prefilled_plan_metadata(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="plan metadata is incomplete"):
+        Generator(config).gen(
+            {
+                "idx": 1,
+                "data_parallel_size": 1,
+                "use_distributed_optimizer": False,
+                "tensor_model_parallel_size": 1,
+                "sequence_parallel": False,
+                "pipeline_model_parallel_size": 1,
+                "num_layers_per_virtual_pipeline_stage": None,
+                "recompute_method": None,
+                "recompute_granularity": None,
+                "recompute_num_layers": None,
+                "micro_batch_size": 2,
+                "context_parallel_size": 1,
+                "expert_model_parallel_size": 1,
+                "decoder_first_pipeline_num_layers": None,
+                "decoder_last_pipeline_num_layers": None,
+                "plan_kind": "homogeneous",
+                "plan_summary": {"stage_count": 1},
+            }
+        )
+
+
+def test_generator_rejects_non_bool_runtime_executable_in_prefilled_metadata(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="runtime_executable must be bool"):
+        Generator(config).gen(
+            {
+                "idx": 1,
+                "data_parallel_size": 1,
+                "use_distributed_optimizer": False,
+                "tensor_model_parallel_size": 1,
+                "sequence_parallel": False,
+                "pipeline_model_parallel_size": 1,
+                "num_layers_per_virtual_pipeline_stage": None,
+                "recompute_method": None,
+                "recompute_granularity": None,
+                "recompute_num_layers": None,
+                "micro_batch_size": 2,
+                "context_parallel_size": 1,
+                "expert_model_parallel_size": 1,
+                "decoder_first_pipeline_num_layers": None,
+                "decoder_last_pipeline_num_layers": None,
+                "plan_kind": "homogeneous",
+                "stage_count": 1,
+                "segment_count": 1,
+                "runtime_mode": "stage-executable",
+                "runtime_executable": "False",
+                "execution_contract": {
+                    "world_size": 1,
+                    "micro_batch_size": 2,
+                    "gradient_accumulation_steps": 4,
+                    "global_batch_size": 8,
+                },
+                "plan_summary": {
+                    "stage_count": 1,
+                    "vpp_stage_segment_counts": [1],
+                    "contract": {"global_batch_size": 8},
+                },
+            }
+        )
+
+
+def test_generator_merges_plan_metadata_without_clobbering_existing_plan_fields(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {"nnodes": 1, "nproc_per_node": 1},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                    "plan": {"template_name": "dense-8"},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "num_layers": 8,
+                    "global_batch_size": 8,
+                    "hidden_size": 8,
+                    "num_attention_heads": 4,
+                    "seq_length": 16,
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    task = Generator(config).gen(
+        {
+            "idx": 1,
+            "data_parallel_size": 1,
+            "use_distributed_optimizer": False,
+            "tensor_model_parallel_size": 1,
+            "sequence_parallel": False,
+            "pipeline_model_parallel_size": 1,
+            "num_layers_per_virtual_pipeline_stage": None,
+            "recompute_method": None,
+            "recompute_granularity": None,
+            "recompute_num_layers": None,
+            "micro_batch_size": 2,
+            "context_parallel_size": 1,
+            "expert_model_parallel_size": 1,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
+            "acc_step": 4,
+        }
+    )
+
+    assert task.experiment.auto_tuner.plan.template_name == "dense-8"
+    assert task.experiment.auto_tuner.plan.plan_kind == "homogeneous"
+
+
 def test_recorder_save_serializes_omegaconf_list_values(tmp_path):
     (tmp_path / "auto_tuner").mkdir()
     config = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
@@ -99,6 +481,39 @@ def test_recorder_save_serializes_omegaconf_list_values(tmp_path):
 
     history = (tmp_path / "auto_tuner" / "history.csv").read_text(encoding="utf-8")
     assert "[0.1, 1.0]" in history
+
+
+def test_recorder_save_serializes_plan_runtime_fields(tmp_path):
+    (tmp_path / "auto_tuner").mkdir()
+    config = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
+    recorder = Recorder(config)
+
+    recorder.save(
+        [
+            {
+                "idx": 1,
+                "performance": 123.4,
+                "plan_kind": "homogeneous",
+                "stage_count": 1,
+                "segment_count": 1,
+                "runtime_executable": True,
+                "execution_contract": {
+                    "world_size": 2,
+                    "micro_batch_size": 2,
+                    "gradient_accumulation_steps": 4,
+                    "global_batch_size": 8,
+                },
+            }
+        ]
+    )
+
+    history = recorder.read()
+
+    assert history[0]["plan_kind"] == "homogeneous"
+    assert history[0]["stage_count"] == 1
+    assert history[0]["segment_count"] == 1
+    assert history[0]["runtime_executable"] is True
+    assert history[0]["execution_contract"]["global_batch_size"] == 8
 
 
 def test_recorder_record_tolerates_missing_autotuner_platform(monkeypatch, tmp_path):
@@ -195,6 +610,65 @@ def test_autotuner_fresh_run_starts_from_first_strategy(monkeypatch, tmp_path):
     tuner.gen()
 
     assert tuner.cur_strategy["label"] == "first"
+
+
+def test_autotuner_gen_propagates_plan_metadata_into_generated_task(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {"nnodes": 1, "nproc_per_node": 2},
+                "auto_tuner": {
+                    "algo": {"name": "grid"},
+                    "space": {
+                        "data_parallel_size": [2],
+                        "use_distributed_optimizer": [False],
+                        "tensor_model_parallel_size": [1],
+                        "sequence_parallel": [False],
+                        "pipeline_model_parallel_size": [1],
+                        "num_layers_per_virtual_pipeline_stage": [0],
+                        "use_recompute": [False],
+                        "recompute_method": ["uniform"],
+                        "recompute_granularity": ["full"],
+                        "recompute_num_layers": [1],
+                        "micro_batch_size": [2],
+                        "context_parallel_size": [1],
+                        "expert_model_parallel_size": [1],
+                    },
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "num_layers": 8,
+                    "global_batch_size": 16,
+                    "hidden_size": 8,
+                    "num_attention_heads": 4,
+                    "seq_length": 16,
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    tuner = AutoTuner(config)
+    tuner.gen()
+
+    assert tuner.cur_strategy["plan_kind"] == "homogeneous"
+    assert tuner.cur_strategy["runtime_executable"] is True
+    assert tuner.cur_task.experiment.auto_tuner.plan.plan_kind == "homogeneous"
+    assert tuner.cur_task.experiment.auto_tuner.plan.stage_count == 1
+    assert tuner.cur_task.experiment.auto_tuner.plan.segment_count == 1
+    assert tuner.cur_task.experiment.auto_tuner.plan.execution_contract.global_batch_size == 16
 
 
 def test_load_chip_profile_normalizes_a_minimal_profile(tmp_path):

@@ -173,7 +173,7 @@ def test_estimate_time_cost_accepts_model_plan_and_exposes_transitions(tmp_path)
     assert plan_cost["time_breakdown"]["plan"]["transitions"][0]["time_ms"] > 0
 
 
-def test_plan_cost_models_consume_analysis_only_multisegment_plan(tmp_path):
+def test_plan_cost_models_consume_homogeneous_vpp_multisegment_plan(tmp_path):
     config = _make_config(tmp_path, num_layers=18, global_batch_size=12, cards=3)
     plan = lower_strategy_to_plan(
         _strategy(
@@ -191,7 +191,7 @@ def test_plan_cost_models_consume_analysis_only_multisegment_plan(tmp_path):
     memory_cost = estimate_memory_cost(plan, config)
     time_cost = estimate_time_cost(plan, config)
 
-    assert validation.runtime_mode == "analysis-only"
+    assert validation.runtime_mode == "stage-executable"
     assert profile["runtime"]["plan"]["vpp_stage_segment_counts"] == [3, 3, 3]
     assert memory_cost["memory_total_mb"] > 0
     assert len(memory_cost["memory_breakdown"]["plan"]["stages"][0]["segments"]) == 3

@@ -182,6 +182,29 @@ class AutoTuner:
             "remove auto_tuner.chip_profile and disable auto_tuner.algo.chip_aware_scoring."
         )
 
+    def _sync_plan_metadata_from_task(self, strategy, task):
+        if not OmegaConf.is_config(task):
+            return
+        plan = OmegaConf.select(task, "experiment.auto_tuner.plan")
+        if plan is None:
+            return
+        strategy["plan_kind"] = plan.get("plan_kind")
+        strategy["stage_count"] = plan.get("stage_count")
+        strategy["segment_count"] = plan.get("segment_count")
+        strategy["runtime_mode"] = plan.get("runtime_mode")
+        strategy["runtime_executable"] = plan.get("runtime_executable")
+        strategy["execution_contract"] = self._to_plain_plan_value(plan.get("execution_contract"))
+        strategy["plan_summary"] = self._to_plain_plan_value(plan.get("plan_summary"))
+
+    def _to_plain_plan_value(self, value):
+        if value is None:
+            return None
+        if OmegaConf.is_config(value):
+            return OmegaConf.to_container(value, resolve=True)
+        if isinstance(value, dict):
+            return copy.deepcopy(value)
+        return value
+
     # clear break task log
     def clear_log(self, folder_path):
         try:
@@ -322,6 +345,7 @@ class AutoTuner:
             self.logger.info(f"Generate task_{self.idx}")
             self.cur_strategy = strategy
             self.cur_task = self.generator.gen(strategy)
+            self._sync_plan_metadata_from_task(self.cur_strategy, self.cur_task)
         else:
             self.cur_strategy = None
 

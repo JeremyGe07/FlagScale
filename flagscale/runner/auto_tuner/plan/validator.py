@@ -34,7 +34,9 @@ def validate_model_plan(plan: ModelPlan) -> PlanValidationResult:
 
 
 def _runtime_mode(plan: ModelPlan) -> Literal["stage-executable", "analysis-only"]:
-    if plan.stages and all(len(stage.segments) == 1 for stage in plan.stages):
+    if plan.stages and (
+        all(len(stage.segments) == 1 for stage in plan.stages) or _is_homogeneous_vpp_plan(plan)
+    ):
         return STAGE_EXECUTABLE
     return ANALYSIS_ONLY
 
@@ -227,6 +229,17 @@ def _allows_stage_segment_gaps(stage: StagePlan) -> bool:
         return False
     value = stage.segments[0].strategy.get("num_layers_per_virtual_pipeline_stage")
     return isinstance(value, int) and value > 0
+
+
+def _is_homogeneous_vpp_plan(plan: ModelPlan) -> bool:
+    stage_segments = [segment for stage in plan.stages for segment in stage.segments]
+    if not stage_segments:
+        return False
+    baseline = dict(stage_segments[0].strategy)
+    chunk_layers = baseline.get("num_layers_per_virtual_pipeline_stage")
+    if not isinstance(chunk_layers, int) or chunk_layers <= 0:
+        return False
+    return all(dict(segment.strategy) == baseline for segment in stage_segments[1:])
 
 
 __all__ = ["PlanValidationResult", "validate_model_plan"]

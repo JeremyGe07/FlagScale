@@ -198,7 +198,7 @@ def test_lower_strategy_to_plan_builds_interleaved_segments_for_vpp(tmp_path):
         (6, 7),
         (12, 13),
     ]
-    assert result.runtime_mode == "analysis-only"
+    assert result.runtime_mode == "stage-executable"
     assert summary["vpp_stage_segment_counts"] == [3, 3, 3]
 
 
@@ -262,8 +262,12 @@ def test_searcher_injects_serializable_plan_summary_and_runtime_metadata(tmp_pat
     strategy = searcher.strategies[0]
     assert "plan" not in strategy
     assert "plan_summary" in strategy
+    assert strategy["plan_kind"] == "homogeneous"
+    assert strategy["stage_count"] == 1
+    assert strategy["segment_count"] == 1
     assert strategy["runtime_mode"] == "stage-executable"
     assert strategy["runtime_executable"] is True
+    assert strategy["execution_contract"]["global_batch_size"] == 16
     assert strategy["plan_summary"]["contract"]["global_batch_size"] == 16
 
     (tmp_path / "auto_tuner").mkdir()
@@ -272,9 +276,14 @@ def test_searcher_injects_serializable_plan_summary_and_runtime_metadata(tmp_pat
     history = recorder.read()
 
     assert history[0]["plan_summary"]["stage_count"] == 1
+    assert history[0]["plan_kind"] == "homogeneous"
+    assert history[0]["stage_count"] == 1
+    assert history[0]["segment_count"] == 1
+    assert history[0]["runtime_executable"] is True
+    assert history[0]["execution_contract"]["global_batch_size"] == 16
 
 
-def test_searcher_marks_vpp_strategy_as_analysis_only_and_not_runtime_executable(tmp_path):
+def test_searcher_marks_vpp_strategy_as_stage_executable_and_runtime_executable(tmp_path):
     _, _, _, _, _, Searcher = _load_lowering_types()
     config = _make_config(
         tmp_path,
@@ -294,6 +303,10 @@ def test_searcher_marks_vpp_strategy_as_analysis_only_and_not_runtime_executable
 
     assert searcher.strategies
     strategy = searcher.strategies[0]
-    assert strategy["runtime_mode"] == "analysis-only"
-    assert strategy["runtime_executable"] is False
+    assert strategy["plan_kind"] == "homogeneous-vpp"
+    assert strategy["stage_count"] == 3
+    assert strategy["segment_count"] == 9
+    assert strategy["runtime_mode"] == "stage-executable"
+    assert strategy["runtime_executable"] is True
+    assert strategy["execution_contract"]["global_batch_size"] == 12
     assert strategy["plan_summary"]["vpp_stage_segment_counts"] == [3, 3, 3]
