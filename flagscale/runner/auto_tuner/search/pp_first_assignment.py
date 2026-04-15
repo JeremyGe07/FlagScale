@@ -1,5 +1,9 @@
 import copy
 
+from flagscale.runner.auto_tuner.search.pp_first_selection import (
+    select_assignment_candidates,
+)
+
 
 def generate_assignment_candidates(
     *,
@@ -17,9 +21,8 @@ def generate_assignment_candidates(
     micro_batch_part = searcher._product_micro_batch_size_vpp_dims(
         parallelism_part, partition_space, config
     )
-    return searcher._product_recompute_dims(micro_batch_part, partition_space, config)[
-        :max_assignments
-    ]
+    assignments = searcher._product_recompute_dims(micro_batch_part, partition_space, config)
+    return select_assignment_candidates(assignments, max_assignments, config)
 
 
 __all__ = ["generate_assignment_candidates"]

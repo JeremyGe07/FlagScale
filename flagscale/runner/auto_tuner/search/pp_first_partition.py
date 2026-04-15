@@ -1,11 +1,22 @@
 from dataclasses import dataclass
 
 from flagscale.runner.auto_tuner.search.searcher import get_first_last_num_layers_for_pp
+from flagscale.runner.auto_tuner.search.pp_first_partition_utils import (
+    balanced_stage_counts,
+    build_contiguous_groups,
+    build_stage_ranges,
+    validate_partition_inputs,
+)
 
 DEFAULT_LAYER_PARAM_FACTOR = 12
+DEFAULT_LAYER_TIME_FACTOR = 48
+DEFAULT_SEQUENCE_TIME_FACTOR = 1
+DEFAULT_INPUT_EDGE_TIME_FACTOR = 0.5
+DEFAULT_OUTPUT_EDGE_TIME_FACTOR = 1.25
 PROVENANCE_HEURISTIC = "heuristic"
 POLICY_LAYER_COUNT_BALANCED = "layer_count_balanced"
 POLICY_PARAM_BALANCED = "param_balanced"
+POLICY_PROFILE_TIME_BALANCED = "profile_time_balanced"
 
 
 @dataclass(frozen=True)
@@ -30,8 +41,8 @@ def build_layer_count_balanced_partition(
     if world_size % pp_degree != 0:
         raise ValueError("world_size must be divisible by pp_degree")
     stage_counts = _stage_layer_counts(num_layers, pp_degree)
-    stage_ranges = _build_stage_ranges(stage_counts)
-    device_groups = _build_contiguous_groups(world_size, pp_degree)
+    stage_ranges = build_stage_ranges(stage_counts)
+    device_groups = build_contiguous_groups(world_size, pp_degree)
     return PartitionCandidate(
         pp_degree=pp_degree,
         stage_ranges=stage_ranges,
@@ -53,7 +64,7 @@ def build_param_balanced_partition(
 ) -> PartitionCandidate:
     if hidden_size <= 0 or padded_vocab_size <= 0:
         raise ValueError("hidden_size and padded_vocab_size must be positive")
-    _validate_partition_inputs(num_layers, pp_degree, world_size)
+    validate_partition_inputs(num_layers, pp_degree, world_size)
     stage_counts = _param_balanced_stage_counts(
         num_layers=num_layers,
         pp_degree=pp_degree,
@@ -62,12 +73,42 @@ def build_param_balanced_partition(
     )
     return PartitionCandidate(
         pp_degree=pp_degree,
-        stage_ranges=_build_stage_ranges(stage_counts),
-        device_groups=_build_contiguous_groups(world_size, pp_degree),
+        stage_ranges=build_stage_ranges(stage_counts),
+        device_groups=build_contiguous_groups(world_size, pp_degree),
         partition_policy=POLICY_PARAM_BALANCED,
         topology_signature=f"contiguous-equal:{pp_degree}x{world_size // pp_degree}",
         provenance=PROVENANCE_HEURISTIC,
         legality_flags=(),
+    )
+
+
+def build_profile_time_balanced_partition(
+    *,
+    num_layers: int,
+    pp_degree: int,
+    world_size: int,
+    hidden_size: int,
+    padded_vocab_size: int,
+    seq_length: int,
+) -> PartitionCandidate:
+    if hidden_size <= 0 or padded_vocab_size <= 0 or seq_length <= 0:
+        raise ValueError("hidden_size, padded_vocab_size and seq_length must be positive")
+    validate_partition_inputs(num_layers, pp_degree, world_size)
+    stage_counts = _profile_time_balanced_stage_counts(
+        num_layers=num_layers,
+        pp_degree=pp_degree,
+        hidden_size=hidden_size,
+        padded_vocab_size=padded_vocab_size,
+        seq_length=seq_length,
+    )
+    return PartitionCandidate(
+        pp_degree=pp_degree,
+        stage_ranges=build_stage_ranges(stage_counts),
+        device_groups=build_contiguous_groups(world_size, pp_degree),
+        partition_policy=POLICY_PROFILE_TIME_BALANCED,
+        topology_signature=f"contiguous-equal:{pp_degree}x{world_size // pp_degree}",
+        provenance=PROVENANCE_HEURISTIC,
+        legality_flags=("heuristic:profile_time_balanced",),
     )
 
 
@@ -80,6 +121,7 @@ def generate_partition_candidates(
     max_partitions: int,
     hidden_size: int | None = None,
     padded_vocab_size: int | None = None,
+    seq_length: int | None = None,
 ) -> list[PartitionCandidate]:
     if max_partitions <= 0:
         return []
@@ -91,6 +133,7 @@ def generate_partition_candidates(
         max_partitions=max_partitions,
         hidden_size=hidden_size,
         padded_vocab_size=padded_vocab_size,
+        seq_length=seq_length,
     )
 
 
@@ -115,15 +158,6 @@ def _stage_layer_counts(num_layers: int, pp_degree: int) -> tuple[int, ...]:
     return (first,) + tuple([middle] * middle_stages) + (last,)
 
 
-def _validate_partition_inputs(num_layers: int, pp_degree: int, world_size: int):
-    if num_layers <= 0:
-        raise ValueError("num_layers must be positive")
-    if pp_degree <= 0:
-        raise ValueError("pp_degree must be positive")
-    if world_size % pp_degree != 0:
-        raise ValueError("world_size must be divisible by pp_degree")
-
-
 def _build_partition_candidates(
     *,
     num_layers: int,
@@ -133,6 +167,7 @@ def _build_partition_candidates(
     max_partitions: int,
     hidden_size: int | None,
     padded_vocab_size: int | None,
+    seq_length: int | None,
 ) -> list[PartitionCandidate]:
     candidates = []
     for policy in _normalize_partition_policies(partition_policy):
@@ -144,6 +179,7 @@ def _build_partition_candidates(
                 world_size=world_size,
                 hidden_size=hidden_size,
                 padded_vocab_size=padded_vocab_size,
+                seq_length=seq_length,
             )
         )
         if len(candidates) >= max_partitions:
@@ -165,6 +201,7 @@ def _build_partition_candidate(
     world_size: int,
     hidden_size: int | None,
     padded_vocab_size: int | None,
+    seq_length: int | None,
 ) -> PartitionCandidate:
     if policy == POLICY_LAYER_COUNT_BALANCED:
         return build_layer_count_balanced_partition(
@@ -179,6 +216,15 @@ def _build_partition_candidate(
             world_size=world_size,
             hidden_size=hidden_size or 0,
             padded_vocab_size=padded_vocab_size or 0,
+        )
+    if policy == POLICY_PROFILE_TIME_BALANCED:
+        return build_profile_time_balanced_partition(
+            num_layers=num_layers,
+            pp_degree=pp_degree,
+            world_size=world_size,
+            hidden_size=hidden_size or 0,
+            padded_vocab_size=padded_vocab_size or 0,
+            seq_length=seq_length or 0,
         )
     raise ValueError(f"Unsupported partition policy: {policy}")
 
@@ -195,56 +241,39 @@ def _param_balanced_stage_counts(
     stage_biases = [0.0] * pp_degree
     stage_biases[0] = edge_units / layer_units
     stage_biases[-1] = edge_units / layer_units
-    return _balanced_stage_counts(num_layers=num_layers, stage_biases=tuple(stage_biases))
+    return balanced_stage_counts(num_layers=num_layers, stage_biases=tuple(stage_biases))
 
 
-def _balanced_stage_counts(num_layers: int, stage_biases: tuple[float, ...]) -> tuple[int, ...]:
-    remaining_layers = num_layers
-    remaining_bias = float(sum(stage_biases))
-    counts = []
-    total_stages = len(stage_biases)
-    for stage_index, bias in enumerate(stage_biases):
-        remaining_stages = total_stages - stage_index
-        if remaining_stages == 1:
-            counts.append(remaining_layers)
-            break
-        target_total = (remaining_layers + remaining_bias) / remaining_stages
-        target_layers = round(target_total - bias)
-        min_layers = 1
-        max_layers = remaining_layers - (remaining_stages - 1)
-        layer_count = min(max(target_layers, min_layers), max_layers)
-        counts.append(layer_count)
-        remaining_layers -= layer_count
-        remaining_bias -= bias
-    return tuple(counts)
-
-
-def _build_stage_ranges(stage_counts: tuple[int, ...]) -> tuple[tuple[int, int], ...]:
-    start = 0
-    ranges = []
-    for count in stage_counts:
-        end = start + count - 1
-        ranges.append((start, end))
-        start = end + 1
-    return tuple(ranges)
-
-
-def _build_contiguous_groups(world_size: int, pp_degree: int) -> tuple[tuple[int, ...], ...]:
-    group_size = world_size // pp_degree
-    return tuple(
-        tuple(range(offset, offset + group_size))
-        for offset in range(0, world_size, group_size)
+def _profile_time_balanced_stage_counts(
+    *,
+    num_layers: int,
+    pp_degree: int,
+    hidden_size: int,
+    padded_vocab_size: int,
+    seq_length: int,
+) -> tuple[int, ...]:
+    layer_units = (
+        DEFAULT_LAYER_TIME_FACTOR * hidden_size * hidden_size
+        + DEFAULT_SEQUENCE_TIME_FACTOR * seq_length * hidden_size
     )
+    edge_units = padded_vocab_size * hidden_size
+    stage_biases = [0.0] * pp_degree
+    stage_biases[0] = DEFAULT_INPUT_EDGE_TIME_FACTOR * edge_units / layer_units
+    stage_biases[-1] = DEFAULT_OUTPUT_EDGE_TIME_FACTOR * edge_units / layer_units
+    return balanced_stage_counts(num_layers=num_layers, stage_biases=tuple(stage_biases))
 
 
 __all__ = [
     "DEFAULT_LAYER_PARAM_FACTOR",
+    "DEFAULT_LAYER_TIME_FACTOR",
     "POLICY_LAYER_COUNT_BALANCED",
     "POLICY_PARAM_BALANCED",
+    "POLICY_PROFILE_TIME_BALANCED",
     "PROVENANCE_HEURISTIC",
     "PartitionCandidate",
     "build_layer_count_balanced_partition",
     "build_param_balanced_partition",
+    "build_profile_time_balanced_partition",
     "generate_partition_candidates",
     "is_power_of_two",
 ]

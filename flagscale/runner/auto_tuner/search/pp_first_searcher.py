@@ -1,23 +1,28 @@
-from flagscale.runner.auto_tuner.search.algorithm import (
-    GridAlgo,
-    sort_by_chip_score,
-    sort_by_time_cost,
-)
+from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.pp_first_assignment import (
     generate_assignment_candidates,
 )
-from flagscale.runner.auto_tuner.search.searcher import Searcher
+from flagscale.runner.auto_tuner.search.searcher import (
+    Searcher,
+    get_first_last_num_layers_for_pp,
+)
 from flagscale.runner.auto_tuner.search.pp_first_partition import (
     POLICY_LAYER_COUNT_BALANCED,
     generate_partition_candidates,
     is_power_of_two,
 )
-from flagscale.runner.auto_tuner.utils import sort_by_memory_model
+from flagscale.runner.auto_tuner.search.pp_first_selection import (
+    DEFAULT_TOPK_PLANS_FOR_SHORT_RUN,
+    build_short_run_shortlist,
+    estimate_metric_name,
+    estimate_value,
+    sort_estimate_candidates,
+)
 
-DEFAULT_TOPK_PLANS_FOR_SHORT_RUN = 16
 DEFAULT_MAX_PP_CANDIDATES = 4
 DEFAULT_MAX_PARTITIONS_PER_PP = 1
 DEFAULT_MAX_ASSIGNMENTS_PER_PARTITION = 256
+RUNTIME_INEXPRESSIBLE_PARTITION = "runtime-inexpressible-partition"
 
 
 class PPFirstSearcher(Searcher):
@@ -28,7 +33,9 @@ class PPFirstSearcher(Searcher):
     def build_space(self, config):
         space = super().build_space(config)
         planner_cfg = _planner_cfg(config)
-        pp_values = [value for value in space["pipeline_model_parallel_size"] if is_power_of_two(value)]
+        pp_values = [
+            value for value in space["pipeline_model_parallel_size"] if is_power_of_two(value)
+        ]
         max_pp = planner_cfg.get("max_pp_candidates", DEFAULT_MAX_PP_CANDIDATES)
         space["pipeline_model_parallel_size"] = pp_values[:max_pp]
         return space
@@ -38,7 +45,7 @@ class PPFirstSearcher(Searcher):
         planner_cfg = _planner_cfg(config)
         world_size = config.experiment.auto_tuner.cards
         num_layers = config.train.model.num_layers
-        hidden_size, padded_vocab_size = _resolve_param_balanced_model_meta(config)
+        model_meta = _resolve_partition_model_meta(config)
         max_partitions = planner_cfg.get(
             "max_partitions_per_pp", DEFAULT_MAX_PARTITIONS_PER_PP
         )
@@ -54,10 +61,14 @@ class PPFirstSearcher(Searcher):
                     "partition_policy", POLICY_LAYER_COUNT_BALANCED
                 ),
                 max_partitions=max_partitions,
-                hidden_size=hidden_size,
-                padded_vocab_size=padded_vocab_size,
+                hidden_size=model_meta["hidden_size"],
+                padded_vocab_size=model_meta["padded_vocab_size"],
+                seq_length=model_meta["seq_length"],
             )
             for partition_index, partition in enumerate(partitions):
+                runtime_layer_counts = _runtime_layer_counts_for_partition(partition)
+                if runtime_layer_counts == RUNTIME_INEXPRESSIBLE_PARTITION:
+                    continue
                 partition_strategies = generate_assignment_candidates(
                     searcher=self,
                     space=space,
@@ -68,6 +79,7 @@ class PPFirstSearcher(Searcher):
                 for assignment_index, strategy in enumerate(
                     partition_strategies
                 ):
+                    _apply_partition_runtime_layers(strategy, runtime_layer_counts)
                     strategy["partition_policy"] = partition.partition_policy
                     strategy["topology_signature"] = partition.topology_signature
                     strategy["provenance"] = partition.provenance
@@ -86,10 +98,13 @@ class PPFirstSearcher(Searcher):
         return strategies
 
     def _annotate_pp_first_metadata(self):
-        topk = _planner_cfg(self.config).get("topk_plans_for_short_run", DEFAULT_TOPK_PLANS_FOR_SHORT_RUN)
+        topk = _planner_cfg(self.config).get(
+            "topk_plans_for_short_run",
+            DEFAULT_TOPK_PLANS_FOR_SHORT_RUN,
+        )
         short_run_ids = {id(strategy) for strategy in getattr(self, "short_run_strategies", [])}
-        estimate_metric = _estimate_metric_name(self.config)
-        ranked = _sort_estimate_candidates(self.strategies, self.config)
+        estimate_metric = estimate_metric_name(self.config)
+        ranked = sort_estimate_candidates(self.strategies, self.config)
         estimate_rank_by_id = {id(strategy): rank for rank, strategy in enumerate(ranked)}
         shortlist_count = len(getattr(self, "short_run_strategies", []))
         for strategy in self.strategies:
@@ -109,63 +124,27 @@ class PPFirstSearcher(Searcher):
             }
             strategy["estimate_metric"] = estimate_metric
             strategy["estimate_rank"] = estimate_rank_by_id[id(strategy)]
-            strategy["estimate_value"] = _estimate_value(strategy, estimate_metric)
+            strategy["estimate_value"] = estimate_value(strategy, estimate_metric)
             strategy["estimated_stage_costs"] = _build_estimated_stage_costs(strategy)
             strategy["short_run_candidate"] = id(strategy) in short_run_ids
             strategy["short_run_shortlist_count"] = shortlist_count
             strategy["legality_flags"] = _build_legality_flags(strategy)
 
     def build_algo(self, strategies, config):
-        shortlist = _build_short_run_shortlist(strategies, config)
+        shortlist = build_short_run_shortlist(strategies, config)
         self.short_run_strategies = shortlist
         self.logger.info(
             "PPFirstSearcher: total_candidates=%s executable_candidates=%s shortlist=%s metric=%s",
             len(strategies),
             len([strategy for strategy in strategies if strategy.get("runtime_executable", False)]),
             len(shortlist),
-            _estimate_metric_name(config),
+            estimate_metric_name(config),
         )
         return GridAlgo(shortlist, config)
 
 
 def _planner_cfg(config):
     return config.experiment.auto_tuner.get("planner", {})
-
-
-def _build_short_run_shortlist(strategies, config):
-    ranked = _sort_estimate_candidates(strategies, config)
-    topk = _planner_cfg(config).get("topk_plans_for_short_run", DEFAULT_TOPK_PLANS_FOR_SHORT_RUN)
-    executable = [strategy for strategy in ranked if strategy.get("runtime_executable", False)]
-    return executable[:topk]
-
-
-def _sort_estimate_candidates(strategies, config):
-    ranked = list(strategies)
-    algo_cfg = config.experiment.auto_tuner.algo
-    if algo_cfg.get("use_profiled_time_cost", False):
-        return sorted(ranked, key=sort_by_time_cost)
-    if algo_cfg.get("chip_aware_scoring", False):
-        return sorted(ranked, key=sort_by_chip_score, reverse=True)
-    if "memory_model" in config.experiment.auto_tuner:
-        return sorted(ranked, key=sort_by_memory_model, reverse=True)
-    return ranked
-
-
-def _estimate_metric_name(config):
-    algo_cfg = config.experiment.auto_tuner.algo
-    if algo_cfg.get("use_profiled_time_cost", False):
-        return "time_cost"
-    if algo_cfg.get("chip_aware_scoring", False):
-        return "chip_score"
-    if "memory_model" in config.experiment.auto_tuner:
-        return "memory_model"
-    return "search_order"
-
-
-def _estimate_value(strategy, metric_name):
-    if metric_name == "search_order":
-        return None
-    return strategy.get(metric_name)
 
 
 def _build_estimated_stage_costs(strategy):
@@ -211,8 +190,54 @@ def _build_legality_flags(strategy):
     return sorted(flags)
 
 
-def _resolve_param_balanced_model_meta(config):
+def _runtime_layer_counts_for_partition(partition):
+    stage_counts = _stage_counts_from_ranges(partition.stage_ranges)
+    if _matches_default_runtime_layer_counts(stage_counts):
+        return None
+    if not _can_represent_stage_counts(stage_counts):
+        return RUNTIME_INEXPRESSIBLE_PARTITION
+    return stage_counts
+
+
+def _apply_partition_runtime_layers(strategy, runtime_layer_counts):
+    if runtime_layer_counts is None:
+        return
+    strategy["decoder_first_pipeline_num_layers"] = runtime_layer_counts[0]
+    strategy["decoder_last_pipeline_num_layers"] = runtime_layer_counts[-1]
+
+
+def _stage_counts_from_ranges(stage_ranges):
+    return tuple(end - start + 1 for start, end in stage_ranges)
+
+
+def _matches_default_runtime_layer_counts(stage_counts):
+    pp_degree = len(stage_counts)
+    total_layers = sum(stage_counts)
+    if pp_degree == 1:
+        return True
+    if total_layers % pp_degree == 0:
+        default_count = total_layers // pp_degree
+        return stage_counts == tuple([default_count] * pp_degree)
+    first_count, last_count = get_first_last_num_layers_for_pp(total_layers, pp_degree)
+    if pp_degree == 2:
+        return stage_counts == (first_count, last_count)
+    middle_total = total_layers - first_count - last_count
+    middle_stages = pp_degree - 2
+    if middle_total <= 0 or middle_total % middle_stages != 0:
+        return False
+    middle_count = middle_total // middle_stages
+    return stage_counts == (first_count,) + tuple([middle_count] * middle_stages) + (last_count,)
+
+
+def _can_represent_stage_counts(stage_counts):
+    if len(stage_counts) <= 2:
+        return True
+    return len(set(stage_counts[1:-1])) == 1
+
+
+def _resolve_partition_model_meta(config):
     hidden_size = int(config.train.model.hidden_size)
+    seq_length = int(config.train.model.seq_length)
     padded_vocab_size = config.train.model.get("padded_vocab_size")
     tokenizer_cfg = config.train.get("data", {}).get("tokenizer", {})
     if padded_vocab_size is None:
@@ -221,9 +246,13 @@ def _resolve_param_balanced_model_meta(config):
         padded_vocab_size = tokenizer_cfg.get("vocab_size")
     if padded_vocab_size is None:
         raise ValueError(
-            "PP-first param_balanced policy requires padded_vocab_size or tokenizer vocab_size."
+            "PP-first partition policies require padded_vocab_size or tokenizer vocab_size."
         )
-    return hidden_size, int(padded_vocab_size)
+    return {
+        "hidden_size": hidden_size,
+        "seq_length": seq_length,
+        "padded_vocab_size": int(padded_vocab_size),
+    }
 
 
 __all__ = ["PPFirstSearcher"]
