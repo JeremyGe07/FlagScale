@@ -11,6 +11,45 @@ from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
 from flagscale.runner.auto_tuner.tuner import AutoTuner
 
 
+def _chip_profile():
+    return {
+        "identity": {"name": "nvidia_l20", "vendor": "nvidia", "chip_class": "gpu"},
+        "memory": {"total_memory_mb": 46000, "bandwidth_gbps": 864},
+        "compute": {"bf16_tflops": 119.5, "attention_tflops": 119.5},
+        "interconnect": {
+            "intra_node": {
+                "fabric": "pcie",
+                "p2p_bandwidth_gbps": 64,
+                "p2p_latency_us": 3,
+                "all_reduce_bandwidth_gbps": 45,
+                "all_reduce_latency_us": 8,
+            },
+            "host_device": {"bandwidth_gbps": 24, "latency_us": 10},
+        },
+        "kernel_support": {
+            "transformer_engine": True,
+            "flash_attention": True,
+            "fused_rmsnorm": True,
+        },
+        "topology": {"max_nodes": 1, "devices_per_node": 4, "homogeneous_only": True},
+        "strategy_hints": {
+            "default_search_priority": "performance",
+            "max_tensor_model_parallel_size": 4,
+            "max_pipeline_model_parallel_size": 4,
+            "disabled_dims": {},
+        },
+        "cost_model": {
+            "reserved_memory_bias_mb": 0,
+            "peak_activation_bias_mb": 0,
+            "overlap": {
+                "dp_comm_overlap_ratio": 0.0,
+                "tp_comm_overlap_ratio": 0.0,
+                "pp_comm_overlap_ratio": 0.0,
+            },
+        },
+    }
+
+
 def _config(tmp_path, *, cards=4, pps=None, planner=None):
     return OmegaConf.create(
         {
@@ -20,6 +59,7 @@ def _config(tmp_path, *, cards=4, pps=None, planner=None):
                 "auto_tuner": {
                     "algo": {"name": "grid"},
                     "control": {"train_iters": 3},
+                    "chip_profile": {"profile": _chip_profile()},
                     "space": {
                         "data_parallel_size": [1, 2, 4],
                         "use_distributed_optimizer": [False, True],
@@ -42,6 +82,7 @@ def _config(tmp_path, *, cards=4, pps=None, planner=None):
                     "hidden_size": 64,
                     "num_attention_heads": 8,
                     "seq_length": 32,
+                    "padded_vocab_size": 256,
                     "eval_iters": 0,
                     "optimizer": {"lr_scheduler": {"lr": 1e-5, "min_lr": 0}},
                 },
@@ -99,6 +140,9 @@ def test_pp_first_searcher_injects_partition_metadata(tmp_path):
     assert "topology_signature" in first
     assert "stage_partition_ranges" in first
     assert first["topk_plans_for_short_run"] == 3
+    assert first["planner_budget"]["max_pp_candidates"] == 2
+    assert first["estimate_metric"] in {"search_order", "memory_model", "chip_score", "time_cost"}
+    assert isinstance(first["estimated_stage_costs"], list)
 
 
 def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):
@@ -114,6 +158,21 @@ def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):
     assert len(marked) == 2
     assert all(s["runtime_executable"] is True for s in marked)
     assert len(searcher.short_run_strategies) == 2
+    assert all("estimate_rank" in s for s in searcher.strategies)
+    assert all("short_run_shortlist_count" in s for s in searcher.strategies)
+    assert {s["short_run_shortlist_count"] for s in searcher.strategies} == {2}
+
+
+def test_pp_first_searcher_prefers_time_cost_when_profiled_time_enabled(tmp_path):
+    config = _config(tmp_path)
+    config.experiment.auto_tuner.algo.use_profiled_time_cost = True
+    config.experiment.auto_tuner.memory_model = {"model_name": "default", "gpu_memory": 46000}
+    config.experiment.auto_tuner.planner = {"name": "pp_first", "topk_plans_for_short_run": 2}
+
+    searcher = PPFirstSearcher(config)
+
+    assert all(strategy["estimate_metric"] == "time_cost" for strategy in searcher.strategies)
+    assert all("time_cost" in strategy for strategy in searcher.short_run_strategies)
 
 
 def test_auto_tuner_uses_pp_first_searcher_when_planner_enabled(tmp_path):
