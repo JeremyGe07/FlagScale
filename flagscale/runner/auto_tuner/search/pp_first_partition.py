@@ -41,6 +41,27 @@ def build_layer_count_balanced_partition(
     )
 
 
+def generate_partition_candidates(
+    *,
+    num_layers: int,
+    pp_degree: int,
+    world_size: int,
+    partition_policy: str,
+    max_partitions: int,
+) -> list[PartitionCandidate]:
+    if max_partitions <= 0:
+        return []
+    if partition_policy != POLICY_LAYER_COUNT_BALANCED:
+        raise ValueError(f"Unsupported partition policy: {partition_policy}")
+    return [
+        build_layer_count_balanced_partition(
+            num_layers=num_layers,
+            pp_degree=pp_degree,
+            world_size=world_size,
+        )
+    ][:max_partitions]
+
+
 def is_power_of_two(value: int) -> bool:
     return value > 0 and (value & (value - 1)) == 0
 
@@ -85,5 +106,6 @@ __all__ = [
     "PROVENANCE_HEURISTIC",
     "PartitionCandidate",
     "build_layer_count_balanced_partition",
+    "generate_partition_candidates",
     "is_power_of_two",
 ]

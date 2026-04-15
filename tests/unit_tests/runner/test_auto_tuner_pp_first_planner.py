@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 from flagscale.runner.auto_tuner.search.pp_first_partition import (
     POLICY_LAYER_COUNT_BALANCED,
     build_layer_count_balanced_partition,
+    generate_partition_candidates,
     is_power_of_two,
 )
 from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
@@ -106,6 +107,30 @@ def test_layer_count_balanced_partition_builds_contiguous_ranges():
     assert partition.device_groups == ((0, 1), (2, 3), (4, 5), (6, 7))
 
 
+def test_generate_partition_candidates_honors_max_partitions_budget():
+    partitions = generate_partition_candidates(
+        num_layers=10,
+        pp_degree=4,
+        world_size=8,
+        partition_policy=POLICY_LAYER_COUNT_BALANCED,
+        max_partitions=1,
+    )
+
+    assert len(partitions) == 1
+    assert partitions[0].partition_policy == POLICY_LAYER_COUNT_BALANCED
+
+
+def test_generate_partition_candidates_rejects_unknown_policy():
+    with pytest.raises(ValueError, match="Unsupported partition policy"):
+        generate_partition_candidates(
+            num_layers=10,
+            pp_degree=4,
+            world_size=8,
+            partition_policy="unknown",
+            max_partitions=1,
+        )
+
+
 def test_pp_first_searcher_limits_pipeline_candidates_to_power_of_two(tmp_path):
     searcher = PPFirstSearcher(_config(tmp_path))
 
@@ -141,8 +166,11 @@ def test_pp_first_searcher_injects_partition_metadata(tmp_path):
     assert "stage_partition_ranges" in first
     assert first["topk_plans_for_short_run"] == 3
     assert first["planner_budget"]["max_pp_candidates"] == 2
+    assert first["planner_budget"]["max_partitions_per_pp"] == 1
     assert first["estimate_metric"] in {"search_order", "memory_model", "chip_score", "time_cost"}
     assert isinstance(first["estimated_stage_costs"], list)
+    assert first["partition_candidate_count"] == 1
+    assert first["assignment_candidate_rank"] == 0
 
 
 def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):
