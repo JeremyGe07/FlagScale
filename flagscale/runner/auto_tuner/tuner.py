@@ -352,12 +352,27 @@ class AutoTuner:
                 self.logger.info(
                     f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy."
                 )
+            self._log_planner_progress(strategy)
             self.logger.info(f"Generate task_{self.idx}")
             self.cur_strategy = strategy
             self.cur_task = self.generator.gen(strategy)
             self._sync_plan_metadata_from_task(self.cur_strategy, self.cur_task)
         else:
             self.cur_strategy = None
+
+    def _log_planner_progress(self, strategy):
+        if strategy.get("planner_name") != "pp_first":
+            return
+        self.logger.info(
+            "PP-first shortlist: candidate_rank=%s estimate_metric=%s estimate_rank=%s "
+            "short_run_candidate=%s shortlist=%s partition_policy=%s",
+            strategy.get("pp_candidate_rank"),
+            strategy.get("estimate_metric"),
+            strategy.get("estimate_rank"),
+            strategy.get("short_run_candidate"),
+            strategy.get("short_run_shortlist_count"),
+            strategy.get("partition_policy"),
+        )
 
     def run(self, task=None):
         # Instantiate a runner and run the task

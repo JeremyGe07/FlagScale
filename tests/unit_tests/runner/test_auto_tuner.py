@@ -516,6 +516,48 @@ def test_recorder_save_serializes_plan_runtime_fields(tmp_path):
     assert history[0]["execution_contract"]["global_batch_size"] == 8
 
 
+def test_recorder_save_serializes_pp_first_planner_metadata(tmp_path):
+    (tmp_path / "auto_tuner").mkdir()
+    config = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
+    recorder = Recorder(config)
+
+    recorder.save(
+        [
+            {
+                "idx": 1,
+                "performance": 123.4,
+                "planner_name": "pp_first",
+                "partition_policy": "layer_count_balanced",
+                "topology_signature": "contiguous-equal:2x2",
+                "provenance": "heuristic",
+                "planner_budget": {
+                    "max_pp_candidates": 4,
+                    "max_partitions_per_pp": 1,
+                    "max_assignments_per_partition": 256,
+                    "topk_plans_for_short_run": 16,
+                },
+                "estimated_stage_costs": [
+                    {"stage_id": 0, "time_ms": 12.3, "memory_mb": 1024.0},
+                    {"stage_id": 1, "time_ms": 14.5, "memory_mb": 1152.0},
+                ],
+                "estimate_metric": "time_cost",
+                "estimate_rank": 3,
+                "estimate_value": 26.8,
+                "short_run_candidate": True,
+                "short_run_shortlist_count": 16,
+            }
+        ]
+    )
+
+    history = recorder.read()
+
+    assert history[0]["planner_name"] == "pp_first"
+    assert history[0]["partition_policy"] == "layer_count_balanced"
+    assert history[0]["planner_budget"]["max_pp_candidates"] == 4
+    assert history[0]["estimated_stage_costs"][1]["memory_mb"] == 1152.0
+    assert history[0]["short_run_candidate"] is True
+
+
 def test_recorder_record_tolerates_missing_autotuner_platform(monkeypatch, tmp_path):
     config = OmegaConf.create(
         {
