@@ -38,6 +38,8 @@ class PPFirstSearcher(Searcher):
         planner_cfg = _planner_cfg(config)
         world_size = config.experiment.auto_tuner.cards
         num_layers = config.train.model.num_layers
+        hidden_size = config.train.model.hidden_size
+        padded_vocab_size = config.train.model.padded_vocab_size
         max_partitions = planner_cfg.get(
             "max_partitions_per_pp", DEFAULT_MAX_PARTITIONS_PER_PP
         )
@@ -53,6 +55,8 @@ class PPFirstSearcher(Searcher):
                     "partition_policy", POLICY_LAYER_COUNT_BALANCED
                 ),
                 max_partitions=max_partitions,
+                hidden_size=hidden_size,
+                padded_vocab_size=padded_vocab_size,
             )
             for partition_index, partition in enumerate(partitions):
                 partition_strategies = generate_assignment_candidates(
