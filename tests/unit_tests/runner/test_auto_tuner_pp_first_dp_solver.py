@@ -70,7 +70,7 @@ def test_stage_level_dp_solver_returns_top_n_chains_in_cost_order():
     stage_candidates = [
         [
             _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=1),
-            _stage_candidate_with_cost(stage_time_cost=2, dp=1, tp=2),
+            _stage_candidate_with_cost(stage_time_cost=12, dp=1, tp=2),
         ],
         [
             _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=3),
@@ -89,10 +89,10 @@ def test_stage_level_dp_solver_returns_top_n_chains_in_cost_order():
         for chain in chains
     ] == [
         [1, 1, 1],
-        [2, 1, 1],
         [1, 3, 1],
+        [1, 1, 4],
     ]
-    assert [chain.dp_aggregate_cost for chain in chains] == [3, 4, 5]
+    assert [chain.dp_aggregate_cost for chain in chains] == [3, 5, 6]
 
 
 def test_stage_level_dp_solver_preserves_metadata_and_structured_transition_breakdown():
@@ -166,6 +166,58 @@ def test_stage_level_dp_solver_keeps_same_named_candidates_separate():
 
     assert len(chains) == 2
     assert [chain.stage_cost_breakdown[0]["stage_time_cost"] for chain in chains] == [5, 7]
+
+
+def test_stage_level_dp_solver_uses_boundary_aware_transition_mapping():
+    stage_candidates = [
+        [
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=1),
+            _stage_candidate_with_cost(stage_time_cost=12, dp=1, tp=2),
+        ],
+        [
+            _stage_candidate_with_cost(stage_time_cost=5, dp=1, tp=3),
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=4),
+        ],
+        [
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=5),
+            _stage_candidate_with_cost(stage_time_cost=5, dp=1, tp=6),
+        ],
+    ]
+    transitions = {
+        (0, 0, 0): {"transition_total_ms": 10.0},
+        (0, 0, 1): {"transition_total_ms": 10.0},
+        (0, 1, 0): {"transition_total_ms": 0.0},
+        (0, 1, 1): {"transition_total_ms": 0.0},
+        (1, 0, 0): {"transition_total_ms": 10.0},
+        (1, 0, 1): {"transition_total_ms": 10.0},
+        (1, 1, 0): {"transition_total_ms": 0.0},
+        (1, 1, 1): {"transition_total_ms": 10.0},
+    }
+
+    chains = solve_stage_level_dp(stage_candidates, transitions, max_results=1)
+
+    assert [stage["stage_time_cost"] for stage in chains[0].stage_strategies] == [1, 1, 1]
+    assert chains[0].dp_aggregate_cost == 13.0
+
+
+def test_stage_level_dp_solver_rejects_boundary_agnostic_mapping_for_multi_stage():
+    stage_candidates = [
+        [
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=1),
+        ],
+        [
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=2),
+        ],
+        [
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=3),
+        ],
+    ]
+    transitions = {
+        (0, 0): {"transition_total_ms": 1.0},
+    }
+
+    with pytest.raises(ValueError, match="boundary-aware keys"):
+        solve_stage_level_dp(stage_candidates, transitions, max_results=1)
 
 
 def test_build_stage_candidates_prunes_invalid_and_keeps_planner_budget(tmp_path):

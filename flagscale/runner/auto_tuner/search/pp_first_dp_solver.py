@@ -51,6 +51,7 @@ def solve_stage_level_dp(
     if resolved_max_results <= 0:
         return ()
     validated_stages = _validate_stage_candidates(stage_candidates)
+    total_stage_count = len(validated_stages)
     frontier = _initial_frontier(validated_stages[0])
     for stage_index, candidates in enumerate(validated_stages[1:], start=1):
         frontier = _advance_frontier(
@@ -59,6 +60,7 @@ def solve_stage_level_dp(
             stage_index,
             transition_costs,
             resolved_max_results,
+            total_stage_count,
         )
     final_chains = [chain for chains in frontier for chain in chains]
     return tuple(_top_k(final_chains, resolved_max_results))
@@ -112,7 +114,14 @@ def _initial_partial(candidate, stage_index, candidate_index):
     )
 
 
-def _advance_frontier(previous_frontier, candidates, stage_index, transition_costs, max_results):
+def _advance_frontier(
+    previous_frontier,
+    candidates,
+    stage_index,
+    transition_costs,
+    max_results,
+    total_stage_count,
+):
     next_frontier = []
     for current_index, candidate in enumerate(candidates):
         extended = []
@@ -126,6 +135,7 @@ def _advance_frontier(previous_frontier, candidates, stage_index, transition_cos
                         previous_index,
                         current_index,
                         transition_costs,
+                        total_stage_count,
                     )
                 )
         next_frontier.append(tuple(_top_k(extended, max_results)))
@@ -139,6 +149,7 @@ def _extend_partial(
     previous_candidate_index,
     current_candidate_index,
     transition_costs,
+    total_stage_count,
 ):
     previous_candidate = partial.stage_strategies[-1]
     transition_cost_breakdown = _transition_cost(
@@ -147,6 +158,8 @@ def _extend_partial(
         previous_candidate_index,
         current_candidate_index,
         transition_costs,
+        stage_index - 1,
+        total_stage_count,
     )
     transition_cost = _transition_total_ms(transition_cost_breakdown)
     stage_cost = _local_stage_cost(candidate)
@@ -202,10 +215,20 @@ def _transition_cost(
     previous_candidate_index,
     current_candidate_index,
     transition_costs,
+    boundary_index,
+    total_stage_count,
 ):
     if callable(transition_costs):
         return _normalize_transition_cost(
             transition_costs(previous_candidate, current_candidate)
+        )
+    boundary_key = (boundary_index, previous_candidate_index, current_candidate_index)
+    if boundary_key in transition_costs:
+        return _normalize_transition_cost(transition_costs[boundary_key])
+    if total_stage_count > 2:
+        raise ValueError(
+            "transition_costs mapping for multi-stage DP must use boundary-aware keys "
+            "like (stage_boundary_index, previous_candidate_index, current_candidate_index)"
         )
     key_options = (
         (previous_candidate_index, current_candidate_index),
@@ -217,7 +240,7 @@ def _transition_cost(
     for key in key_options:
         if key in transition_costs:
             return _normalize_transition_cost(transition_costs[key])
-    raise ValueError(f"missing transition cost for {key_options[0]!r}")
+    raise ValueError(f"missing transition cost for {boundary_key!r}")
 
 
 def _normalize_transition_cost(transition_cost):
