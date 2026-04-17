@@ -1,3 +1,5 @@
+import math
+
 BYTES_PER_MEGABYTE = 1024.0 * 1024.0
 TP_TRANSITION_COST_PER_UNIT_MS = 1.0
 DP_TRANSITION_COST_PER_UNIT_MS = 1.0
@@ -7,14 +9,8 @@ ACTIVATION_TRANSFER_COST_PER_MB_MS = 1.0
 def estimate_transition_cost(previous_stage, current_stage, config):
     previous = _validate_stage(previous_stage, "previous_stage")
     current = _validate_stage(current_stage, "current_stage")
-    hidden_size = _require_positive_number(
-        config.train.model.hidden_size,
-        "train.model.hidden_size",
-    )
-    seq_length = _require_positive_number(
-        config.train.model.seq_length,
-        "train.model.seq_length",
-    )
+    hidden_size = _read_model_dimension(config, "hidden_size")
+    seq_length = _read_model_dimension(config, "seq_length")
 
     tp_transition_ms = _scaled_transition_cost(
         previous["tensor_model_parallel_size"],
@@ -48,15 +44,9 @@ def _scaled_transition_cost(previous_value, current_value, scale_ms):
 
 
 def _activation_transfer_cost(previous, current, hidden_size, seq_length):
-    if previous["pipeline_model_parallel_size"] == current["pipeline_model_parallel_size"]:
-        return 0.0
     micro_batch_size = min(previous["micro_batch_size"], current["micro_batch_size"])
     boundary_mb = hidden_size * seq_length * micro_batch_size * 2.0 / BYTES_PER_MEGABYTE
-    pipeline_delta = abs(
-        float(current["pipeline_model_parallel_size"])
-        - float(previous["pipeline_model_parallel_size"])
-    )
-    return boundary_mb * pipeline_delta * ACTIVATION_TRANSFER_COST_PER_MB_MS
+    return boundary_mb * ACTIVATION_TRANSFER_COST_PER_MB_MS
 
 
 def _validate_stage(stage, stage_name):
@@ -74,10 +64,21 @@ def _validate_stage(stage, stage_name):
     return validated
 
 
+def _read_model_dimension(config, field_name):
+    try:
+        model = config.train.model
+    except Exception as exc:
+        raise ValueError(f"train.model.{field_name} is required") from exc
+    value = model.get(field_name, None)
+    return _require_positive_number(value, f"train.model.{field_name}")
+
+
 def _require_positive_number(value, field_name):
     if value is None:
         raise ValueError(f"{field_name} is required")
     numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"{field_name} must be finite")
     if numeric <= 0:
         raise ValueError(f"{field_name} must be positive")
     return numeric

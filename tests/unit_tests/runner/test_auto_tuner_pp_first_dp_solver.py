@@ -34,7 +34,10 @@ def test_build_stage_candidates_prunes_invalid_and_keeps_planner_budget(tmp_path
     assert all(candidate["stage_index"] == 0 for candidate in candidates)
     assert all(candidate["stage_range"] == (0, 4) for candidate in candidates)
     assert all(candidate["stage_device_group"] == (0, 1) for candidate in candidates)
-    assert all(candidate["pipeline_model_parallel_size"] == partition.pp_degree for candidate in candidates)
+    assert all(
+        candidate["pipeline_model_parallel_size"] == partition.pp_degree
+        for candidate in candidates
+    )
     assert candidates[0]["stage_time_cost"] <= candidates[1]["stage_time_cost"]
 
 
@@ -168,17 +171,19 @@ def test_build_stage_candidates_rejects_obvious_stage_memory_limits(tmp_path):
         )
 
 
-def test_estimate_transition_cost_is_zero_when_tp_and_dp_stay_same(tmp_path):
+def test_estimate_transition_cost_has_activation_transfer_when_tp_and_dp_stay_same(
+    tmp_path,
+):
     config = _config(tmp_path)
     previous_stage = stage_candidate(dp=2, tp=2, pp=2)
     current_stage = stage_candidate(dp=2, tp=2, pp=2)
 
     cost = estimate_transition_cost(previous_stage, current_stage, config)
 
-    assert cost["transition_total_ms"] == 0
+    assert cost["transition_total_ms"] > 0
     assert cost["tp_transition_ms"] == 0
     assert cost["dp_transition_ms"] == 0
-    assert cost["activation_transfer_ms"] == 0
+    assert cost["activation_transfer_ms"] > 0
 
 
 def test_estimate_transition_cost_penalizes_tp_changes(tmp_path):
@@ -208,7 +213,7 @@ def test_estimate_transition_cost_penalizes_dp_changes(tmp_path):
 def test_estimate_transition_cost_penalizes_pipeline_boundary_activation_transfer(tmp_path):
     config = _config(tmp_path)
     previous_stage = stage_candidate(dp=2, tp=2, pp=2)
-    current_stage = stage_candidate(dp=2, tp=2, pp=4)
+    current_stage = stage_candidate(dp=2, tp=2, pp=2)
 
     cost = estimate_transition_cost(previous_stage, current_stage, config)
 
@@ -216,3 +221,26 @@ def test_estimate_transition_cost_penalizes_pipeline_boundary_activation_transfe
     assert cost["tp_transition_ms"] == 0
     assert cost["dp_transition_ms"] == 0
     assert cost["activation_transfer_ms"] > 0
+
+
+@pytest.mark.parametrize(
+    ("field_name", "bad_value"),
+    (
+        ("hidden_size", float("nan")),
+        ("hidden_size", float("inf")),
+        ("seq_length", float("nan")),
+        ("seq_length", float("inf")),
+    ),
+)
+def test_estimate_transition_cost_rejects_non_finite_model_dimensions(
+    tmp_path,
+    field_name,
+    bad_value,
+):
+    config = _config(tmp_path)
+    setattr(config.train.model, field_name, bad_value)
+    previous_stage = stage_candidate(dp=2, tp=2, pp=2)
+    current_stage = stage_candidate(dp=2, tp=2, pp=2)
+
+    with pytest.raises(ValueError, match=f"train.model.{field_name} must be finite"):
+        estimate_transition_cost(previous_stage, current_stage, config)
