@@ -104,7 +104,7 @@ def _config(
     )
 
 
-def test_build_stage_candidates_prunes_invalid_and_keeps_budget(tmp_path):
+def test_build_stage_candidates_prunes_invalid_and_keeps_planner_budget(tmp_path):
     config = _config(tmp_path, cards=4, global_batch_size=8)
     searcher = PPFirstSearcher(config)
     partition = build_layer_count_balanced_partition(num_layers=10, pp_degree=2, world_size=4)
@@ -115,7 +115,6 @@ def test_build_stage_candidates_prunes_invalid_and_keeps_budget(tmp_path):
         config=config,
         partition=partition,
         stage_index=0,
-        max_stage_candidates=2,
     )
 
     assert len(candidates) == 2

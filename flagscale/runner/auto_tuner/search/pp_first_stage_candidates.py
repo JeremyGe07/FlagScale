@@ -14,8 +14,9 @@ def build_stage_candidates(
     config,
     partition,
     stage_index,
-    max_stage_candidates,
+    max_stage_candidates=None,
 ):
+    max_stage_candidates = _resolve_max_stage_candidates(config, max_stage_candidates)
     if max_stage_candidates <= 0:
         raise ValueError("max_stage_candidates must be positive")
 
@@ -50,6 +51,15 @@ def build_stage_candidates(
             raise last_error
         raise ValueError("No executable stage candidates matched the stage constraints.")
     return _sort_stage_candidates(valid_candidates, config)[:max_stage_candidates]
+
+
+def _resolve_max_stage_candidates(config, max_stage_candidates):
+    if max_stage_candidates is not None:
+        return max_stage_candidates
+    planner_cfg = config.experiment.auto_tuner.get("planner", {})
+    if "max_stage_candidates_per_stage" not in planner_cfg:
+        raise ValueError("planner.max_stage_candidates_per_stage is required")
+    return planner_cfg["max_stage_candidates_per_stage"]
 
 
 def _validate_stage_context(space, config, partition, stage_device_group):
