@@ -3,6 +3,7 @@ from omegaconf import OmegaConf
 from flagscale.runner.auto_tuner.search.pp_first_selection import (
     build_short_run_shortlist,
     select_assignment_candidates,
+    _runtime_execution_key,
 )
 
 
@@ -180,3 +181,53 @@ def test_build_short_run_shortlist_dedupes_equivalent_runtime_plans():
         "layer-pp1",
         "profile-pp2-distinct",
     ]
+
+
+def test_build_short_run_shortlist_keeps_dp_stage_heterogeneous_plans_distinct():
+    config = _config()
+    config.experiment.auto_tuner.planner.topk_plans_for_short_run = 4
+    base_stage = {
+        "data_parallel_size": 2,
+        "tensor_model_parallel_size": 1,
+        "pipeline_model_parallel_size": 2,
+        "context_parallel_size": 1,
+        "expert_model_parallel_size": 1,
+        "use_distributed_optimizer": True,
+        "sequence_parallel": False,
+        "acc_step": 16,
+        "micro_batch_size": 1,
+        "num_layers_per_virtual_pipeline_stage": None,
+        "use_recompute": False,
+        "recompute_method": None,
+        "recompute_granularity": None,
+        "recompute_num_layers": None,
+        "decoder_first_pipeline_num_layers": 16,
+        "decoder_last_pipeline_num_layers": 12,
+    }
+    strategies = [
+        {
+            "name": "dp-chain-a",
+            "time_cost": 1.0,
+            **base_stage,
+            "stage_strategies": (
+                {**base_stage, "name": "stage-0"},
+                {**base_stage, "name": "stage-1-a"},
+            ),
+            "runtime_executable": True,
+        },
+        {
+            "name": "dp-chain-b",
+            "time_cost": 2.0,
+            **base_stage,
+            "stage_strategies": (
+                {**base_stage, "name": "stage-0"},
+                {**base_stage, "name": "stage-1-b", "micro_batch_size": 2},
+            ),
+            "runtime_executable": True,
+        },
+    ]
+
+    shortlist = build_short_run_shortlist(strategies, config)
+
+    assert [strategy["name"] for strategy in shortlist] == ["dp-chain-a", "dp-chain-b"]
+    assert _runtime_execution_key(shortlist[0]) != _runtime_execution_key(shortlist[1])

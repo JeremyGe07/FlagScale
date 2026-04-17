@@ -141,7 +141,10 @@ def _append_bucket_floor(shortlist, seen, strategies, floor, key_fn):
 def _runtime_execution_key(strategy):
     if not _has_runtime_identity(strategy):
         return ("object", id(strategy))
-    return tuple((key, _hashable_value(strategy.get(key))) for key in RUNTIME_STRATEGY_KEYS)
+    key = tuple((field, _hashable_value(strategy.get(field))) for field in RUNTIME_STRATEGY_KEYS)
+    if "stage_strategies" not in strategy:
+        return key
+    return key + (("stage_strategies", _stage_runtime_signature(strategy["stage_strategies"])),)
 
 
 def _has_runtime_identity(strategy):
@@ -154,6 +157,16 @@ def _hashable_value(value):
     if isinstance(value, dict):
         return tuple(sorted((key, _hashable_value(item)) for key, item in value.items()))
     return value
+
+
+def _stage_runtime_signature(stage_strategies):
+    return tuple(
+        tuple(
+            (field, _hashable_value(stage.get(field)))
+            for field in RUNTIME_STRATEGY_KEYS
+        )
+        for stage in stage_strategies
+    )
 
 
 def _resolve_pp_floor(planner_cfg, executable):
