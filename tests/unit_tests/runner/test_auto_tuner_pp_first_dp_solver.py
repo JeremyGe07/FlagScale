@@ -223,6 +223,25 @@ def test_estimate_transition_cost_penalizes_pipeline_boundary_activation_transfe
     assert cost["activation_transfer_ms"] > 0
 
 
+def test_estimate_transition_cost_rejects_inconsistent_stage_micro_batch_size(tmp_path):
+    config = _config(tmp_path)
+    previous_stage = stage_candidate(dp=2, tp=2, pp=2, mb=1)
+    current_stage = stage_candidate(dp=2, tp=2, pp=2, mb=2)
+
+    with pytest.raises(ValueError, match="micro_batch_size must match across a stage boundary"):
+        estimate_transition_cost(previous_stage, current_stage, config)
+
+
+def test_estimate_transition_cost_rejects_non_mapping_model_config(tmp_path):
+    config = _config(tmp_path)
+    config.train.model = 1
+    previous_stage = stage_candidate(dp=2, tp=2, pp=2)
+    current_stage = stage_candidate(dp=2, tp=2, pp=2)
+
+    with pytest.raises(ValueError, match="train.model must be a mapping"):
+        estimate_transition_cost(previous_stage, current_stage, config)
+
+
 @pytest.mark.parametrize(
     ("field_name", "bad_value"),
     (

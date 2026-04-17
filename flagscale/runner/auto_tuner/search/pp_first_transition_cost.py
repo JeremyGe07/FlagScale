@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 import math
 
 BYTES_PER_MEGABYTE = 1024.0 * 1024.0
@@ -44,7 +45,7 @@ def _scaled_transition_cost(previous_value, current_value, scale_ms):
 
 
 def _activation_transfer_cost(previous, current, hidden_size, seq_length):
-    micro_batch_size = min(previous["micro_batch_size"], current["micro_batch_size"])
+    micro_batch_size = _boundary_micro_batch_size(previous, current)
     boundary_mb = hidden_size * seq_length * micro_batch_size * 2.0 / BYTES_PER_MEGABYTE
     return boundary_mb * ACTIVATION_TRANSFER_COST_PER_MB_MS
 
@@ -68,9 +69,19 @@ def _read_model_dimension(config, field_name):
     try:
         model = config.train.model
     except Exception as exc:
-        raise ValueError(f"train.model.{field_name} is required") from exc
+        raise ValueError("train.model is required") from exc
+    if not isinstance(model, Mapping):
+        raise ValueError("train.model must be a mapping")
     value = model.get(field_name, None)
     return _require_positive_number(value, f"train.model.{field_name}")
+
+
+def _boundary_micro_batch_size(previous, current):
+    previous_mb = previous["micro_batch_size"]
+    current_mb = current["micro_batch_size"]
+    if previous_mb != current_mb:
+        raise ValueError("micro_batch_size must match across a stage boundary")
+    return previous_mb
 
 
 def _require_positive_number(value, field_name):
