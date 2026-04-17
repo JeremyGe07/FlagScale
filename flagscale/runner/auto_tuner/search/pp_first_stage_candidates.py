@@ -5,6 +5,8 @@ from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
 from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
+from flagscale.runner.auto_tuner.search.algorithm import sort_by_chip_score
+from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
 
 
 def build_stage_candidates(
@@ -42,6 +44,7 @@ def build_stage_candidates(
                     stage_index,
                     stage_range,
                     stage_device_group,
+                    partition.pp_degree,
                 )
             )
         except ValueError as exc:
@@ -113,10 +116,18 @@ def _candidate_matches_global_batch(candidate, config):
     return gbs % required == 0
 
 
-def _enrich_stage_candidate(candidate, config, stage_index, stage_range, stage_device_group):
+def _enrich_stage_candidate(
+    candidate,
+    config,
+    stage_index,
+    stage_range,
+    stage_device_group,
+    partition_pp_degree,
+):
     local_layer_count = stage_range[1] - stage_range[0] + 1
     local_stage_range = (0, local_layer_count - 1)
     stage_strategy = deepcopy(candidate)
+    _ensure_pipeline_model_parallel_size(stage_strategy, partition_pp_degree)
     stage_strategy.pop("stage_index", None)
     stage_strategy.pop("stage_range", None)
     stage_strategy.pop("stage_device_group", None)
@@ -152,7 +163,13 @@ def _enrich_stage_candidate(candidate, config, stage_index, stage_range, stage_d
     stage_candidate["stage_time_cost"] = time_cost["time_total_ms"]
     stage_candidate["memory_model"] = stage_candidate["stage_memory_model"]
     stage_candidate["time_cost"] = stage_candidate["stage_time_cost"]
+    _attach_chip_score(stage_candidate, config)
     return stage_candidate
+
+
+def _ensure_pipeline_model_parallel_size(strategy, partition_pp_degree):
+    if strategy.get("pipeline_model_parallel_size") != partition_pp_degree:
+        raise ValueError("stage candidate pipeline_model_parallel_size must equal partition pp_degree")
 
 
 def _stage_config(config, cards):
@@ -185,6 +202,8 @@ def _resolve_memory_limit_mb(config):
 def _sort_stage_candidates(candidates, config):
     if config.experiment.auto_tuner.algo.get("use_profiled_time_cost", False):
         return sorted(candidates, key=lambda candidate: candidate["stage_time_cost"])
+    if config.experiment.auto_tuner.algo.get("chip_aware_scoring", False):
+        return sorted(candidates, key=sort_by_chip_score, reverse=True)
     if "memory_model" in config.experiment.auto_tuner:
         return sorted(
             candidates,
@@ -192,6 +211,18 @@ def _sort_stage_candidates(candidates, config):
             reverse=True,
         )
     return candidates
+
+
+def _attach_chip_score(strategy, config):
+    if not config.experiment.auto_tuner.algo.get("chip_aware_scoring", False):
+        return
+    profile = get_attached_chip_profile(config)
+    if profile is None:
+        raise ValueError("chip_aware_scoring requires a chip profile")
+    chip_score = build_chip_score(strategy, profile)
+    strategy["chip_score"] = chip_score["score"]
+    strategy["chip_priority"] = chip_score["priority"]
+    strategy["chip_score_reasons"] = chip_score["reasons"]
 
 
 __all__ = ["build_stage_candidates"]
