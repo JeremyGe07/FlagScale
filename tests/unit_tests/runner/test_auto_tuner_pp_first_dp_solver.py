@@ -212,6 +212,7 @@ def test_build_stage_candidates_rejects_stage_device_group_mesh_mismatch(tmp_pat
 
 def test_build_stage_candidates_uses_chip_aware_estimate_sorting(tmp_path, monkeypatch):
     config = _config(tmp_path, cards=4, global_batch_size=8)
+    config.experiment.auto_tuner.algo.use_profiled_time_cost = False
     config.experiment.auto_tuner.algo.chip_aware_scoring = True
     config.experiment.auto_tuner.planner.max_stage_candidates_per_stage = 1
     searcher = PPFirstSearcher(config)
