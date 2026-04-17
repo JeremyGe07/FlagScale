@@ -4,6 +4,9 @@ from flagscale.runner.auto_tuner.search.pp_first_partition import (
     build_layer_count_balanced_partition,
 )
 import flagscale.runner.auto_tuner.search.pp_first_stage_candidates as stage_candidates_mod
+from flagscale.runner.auto_tuner.search.pp_first_transition_cost import (
+    estimate_transition_cost,
+)
 from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
 from flagscale.runner.auto_tuner.search.pp_first_stage_candidates import (
     build_stage_candidates,
@@ -163,3 +166,53 @@ def test_build_stage_candidates_rejects_obvious_stage_memory_limits(tmp_path):
             stage_index=0,
             max_stage_candidates=2,
         )
+
+
+def test_estimate_transition_cost_is_zero_when_tp_and_dp_stay_same(tmp_path):
+    config = _config(tmp_path)
+    previous_stage = stage_candidate(dp=2, tp=2, pp=2)
+    current_stage = stage_candidate(dp=2, tp=2, pp=2)
+
+    cost = estimate_transition_cost(previous_stage, current_stage, config)
+
+    assert cost["transition_total_ms"] == 0
+    assert cost["tp_transition_ms"] == 0
+    assert cost["dp_transition_ms"] == 0
+    assert cost["activation_transfer_ms"] == 0
+
+
+def test_estimate_transition_cost_penalizes_tp_changes(tmp_path):
+    config = _config(tmp_path)
+    previous_stage = stage_candidate(dp=1, tp=2, pp=2)
+    current_stage = stage_candidate(dp=1, tp=1, pp=2)
+
+    cost = estimate_transition_cost(previous_stage, current_stage, config)
+
+    assert cost["transition_total_ms"] > 0
+    assert cost["tp_transition_ms"] > 0
+    assert cost["dp_transition_ms"] == 0
+
+
+def test_estimate_transition_cost_penalizes_dp_changes(tmp_path):
+    config = _config(tmp_path)
+    previous_stage = stage_candidate(dp=1, tp=2, pp=2)
+    current_stage = stage_candidate(dp=2, tp=2, pp=2)
+
+    cost = estimate_transition_cost(previous_stage, current_stage, config)
+
+    assert cost["transition_total_ms"] > 0
+    assert cost["tp_transition_ms"] == 0
+    assert cost["dp_transition_ms"] > 0
+
+
+def test_estimate_transition_cost_penalizes_pipeline_boundary_activation_transfer(tmp_path):
+    config = _config(tmp_path)
+    previous_stage = stage_candidate(dp=2, tp=2, pp=2)
+    current_stage = stage_candidate(dp=2, tp=2, pp=4)
+
+    cost = estimate_transition_cost(previous_stage, current_stage, config)
+
+    assert cost["transition_total_ms"] > 0
+    assert cost["tp_transition_ms"] == 0
+    assert cost["dp_transition_ms"] == 0
+    assert cost["activation_transfer_ms"] > 0
