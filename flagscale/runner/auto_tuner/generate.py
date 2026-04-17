@@ -4,6 +4,7 @@ import os
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan, summarize_plan
+from flagscale.runner.auto_tuner.plan.runtime import build_stage_hetero_runtime_overrides
 from flagscale.runner.auto_tuner.plan.summary import (
     is_runtime_executable_plan,
     plan_kind,
@@ -138,6 +139,16 @@ class Generator:
                 "plan_summary": metadata["plan_summary"],
             },
         )
+        self._set_stage_hetero_runtime(strategy, config)
+
+    def _set_stage_hetero_runtime(self, strategy, config):
+        overrides = build_stage_hetero_runtime_overrides(strategy, config)
+        if overrides is None:
+            return
+        config.train.system.hetero = OmegaConf.merge(
+            config.train.system.get("hetero", {}), overrides["hetero"]
+        )
+        config.train.system = OmegaConf.merge(config.train.system, overrides["system"])
 
     def gen(self, strategy):
         config = copy.deepcopy(self.config)

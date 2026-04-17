@@ -120,7 +120,10 @@ def _validate_parallelism(plan: ModelPlan) -> None:
 
 def _validate_global_batch_size(plan: ModelPlan) -> None:
     contract = plan.contract
-    if contract is None or contract.global_batch_size is None:
+    if contract is None or contract.global_batch_size is None or not plan.stages:
+        return
+    if _is_stage_runtime_bridge_plan(plan):
+        _validate_stage_heterogeneous_global_batch_size(plan, contract)
         return
     for stage in plan.stages:
         for index, segment in enumerate(stage.segments):
@@ -143,6 +146,17 @@ def _validate_global_batch_size(plan: ModelPlan) -> None:
 
 def _validate_stage_executable_constraints(plan: ModelPlan) -> None:
     used_ranks = _validate_required_stage_device_groups(plan)
+    if _is_stage_runtime_bridge_plan(plan):
+        _validate_stage_runtime_fields(plan)
+        _validate_stage_runtime_mesh_sizes(plan)
+    else:
+        _validate_homogeneous_stage_parallelism(plan)
+        _validate_stage_device_group_capacity(plan)
+    if plan.contract is not None and len(used_ranks) != plan.contract.world_size:
+        raise ValueError("device_group union size must equal contract world_size")
+
+
+def _validate_homogeneous_stage_parallelism(plan: ModelPlan) -> None:
     expected_dp_size: int | None = None
     for stage in plan.stages:
         segment = stage.segments[0]
@@ -154,13 +168,22 @@ def _validate_stage_executable_constraints(plan: ModelPlan) -> None:
         pp_size = _strategy_int(segment.strategy, ("pipeline_model_parallel_size", "pp"))
         if pp_size is not None and pp_size != len(plan.stages):
             raise ValueError("pipeline_model_parallel_size must equal len(plan.stages)")
-        required_ranks = _required_parallel_ranks(segment.strategy)
+
+
+def _validate_stage_device_group_capacity(plan: ModelPlan) -> None:
+    for stage in plan.stages:
+        required_ranks = _required_parallel_ranks(stage.segments[0].strategy)
         if required_ranks > len(stage.device_group):
             raise ValueError(
                 f"stage {stage.stage_id} device_group is too small for tensor/context/expert parallelism"
             )
-    if plan.contract is not None and len(used_ranks) != plan.contract.world_size:
-        raise ValueError("device_group union size must equal contract world_size")
+
+
+def _validate_stage_runtime_mesh_sizes(plan: ModelPlan) -> None:
+    for stage in plan.stages:
+        required_ranks = _required_parallel_ranks(stage.segments[0].strategy)
+        if required_ranks != len(stage.device_group):
+            raise ValueError(f"stage {stage.stage_id} device_group must match stage mesh size")
 
 
 def _validate_explicit_device_groups(plan: ModelPlan) -> None:
@@ -186,11 +209,58 @@ def _validate_required_stage_device_groups(plan: ModelPlan) -> set[int]:
     return used_ranks
 
 
+def _validate_stage_heterogeneous_global_batch_size(plan: ModelPlan, contract) -> None:
+    first_dp = _required_strategy_int(plan.stages[0].segments[0].strategy, DATA_PARALLEL_KEYS)
+    expected = first_dp * contract.micro_batch_size * contract.gradient_accumulation_steps
+    if expected != contract.global_batch_size:
+        raise ValueError(
+            "stage-heterogeneous global batch size mismatch: "
+            f"expected {expected}, got {contract.global_batch_size}"
+        )
+    base_unit = first_dp * contract.micro_batch_size
+    for stage in plan.stages[1:]:
+        stage_dp = _required_strategy_int(stage.segments[0].strategy, DATA_PARALLEL_KEYS)
+        if base_unit % stage_dp != 0:
+            raise ValueError(
+                "stage-heterogeneous data_parallel_size must divide "
+                "first_stage_dp * micro_batch_size"
+            )
+
+
+def _validate_stage_runtime_fields(plan: ModelPlan) -> None:
+    stage_strategies = [dict(stage.segments[0].strategy) for stage in plan.stages]
+    if _has_inconsistent_field(stage_strategies, "use_distributed_optimizer"):
+        raise ValueError("use_distributed_optimizer must be consistent across stages")
+    if _has_inconsistent_field(stage_strategies, "context_parallel_size"):
+        raise ValueError("context_parallel_size must be consistent across stages")
+    if _has_inconsistent_field(stage_strategies, "recompute_signature"):
+        raise ValueError("recompute configuration must be consistent across stages")
+    tp_values = {_required_strategy_int(strategy, ("tensor_model_parallel_size", "tp")) for strategy in stage_strategies}
+    if len(tp_values) > 1 and not all(strategy.get("sequence_parallel") is True for strategy in stage_strategies):
+        raise ValueError("sequence_parallel must be enabled when tensor parallelism differs across stages")
+
+
 def _required_parallel_ranks(strategy: dict[str, object]) -> int:
     dp_size = _required_strategy_int(strategy, ("data_parallel_size", "dp"))
     tp_size = _required_strategy_int(strategy, ("tensor_model_parallel_size", "tp"))
     cp_size = _required_strategy_int(strategy, ("context_parallel_size", "cp"))
     return dp_size * tp_size * cp_size
+
+
+def _has_inconsistent_field(stage_strategies, field: str) -> bool:
+    values = {_field_signature(strategy, field) for strategy in stage_strategies}
+    return len(values) > 1
+
+
+def _field_signature(strategy: dict[str, object], field: str):
+    if field == "recompute_signature":
+        return (
+            strategy.get("use_recompute"),
+            strategy.get("recompute_method"),
+            strategy.get("recompute_granularity"),
+            strategy.get("recompute_num_layers"),
+        )
+    return strategy.get(field)
 
 
 def _validate_device_group_ranks(
@@ -240,6 +310,17 @@ def _is_homogeneous_vpp_plan(plan: ModelPlan) -> bool:
     if not isinstance(chunk_layers, int) or chunk_layers <= 0:
         return False
     return all(dict(segment.strategy) == baseline for segment in stage_segments[1:])
+
+
+def _is_stage_heterogeneous_plan(plan: ModelPlan) -> bool:
+    if _is_homogeneous_vpp_plan(plan):
+        return False
+    baseline = dict(plan.stages[0].segments[0].strategy)
+    return any(dict(stage.segments[0].strategy) != baseline for stage in plan.stages[1:])
+
+
+def _is_stage_runtime_bridge_plan(plan: ModelPlan) -> bool:
+    return any(stage.segments[0].strategy.get("stage_runtime_bridge") is True for stage in plan.stages)
 
 
 __all__ = ["PlanValidationResult", "validate_model_plan"]

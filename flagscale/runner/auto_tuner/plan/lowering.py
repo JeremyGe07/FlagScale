@@ -19,9 +19,7 @@ def build_execution_contract(strategy, config) -> ExecutionContract:
 
 def lower_strategy_to_plan(strategy, config, validate=True) -> ModelPlan:
     num_layers = strategy.get("num_layers", config.train.model.num_layers)
-    pp_size = strategy["pipeline_model_parallel_size"]
-    stage_device_groups = _contiguous_stage_groups(_resolve_world_size(config), pp_size)
-    stage_segments = _build_stage_segments(num_layers, strategy)
+    stage_segments, stage_device_groups = _build_plan_stages(num_layers, strategy, config)
 
     plan = ModelPlan(
         stages=tuple(
@@ -43,6 +41,15 @@ def _resolve_world_size(config) -> int:
         return int(auto_tuner.cards)
     runner = config.experiment.runner
     return int(runner.nnodes) * int(runner.nproc_per_node)
+
+
+def _build_plan_stages(num_layers: int, strategy, config):
+    if _has_explicit_stage_metadata(strategy):
+        return _build_explicit_stage_plan(num_layers, strategy, config)
+    pp_size = strategy["pipeline_model_parallel_size"]
+    stage_device_groups = _contiguous_stage_groups(_resolve_world_size(config), pp_size)
+    stage_segments = _build_stage_segments(num_layers, strategy)
+    return stage_segments, stage_device_groups
 
 
 def _build_stage_segments(num_layers: int, strategy) -> tuple[tuple[SegmentPlan, ...], ...]:
@@ -105,6 +112,39 @@ def _build_interleaved_stage_segments(
     return tuple(stage_segments)
 
 
+def _build_explicit_stage_plan(num_layers: int, strategy, config):
+    stage_ranges = tuple(tuple(item) for item in strategy["stage_partition_ranges"])
+    stage_strategies = tuple(dict(item) for item in strategy["stage_strategies"])
+    if len(stage_ranges) != len(stage_strategies):
+        raise ValueError("stage_partition_ranges and stage_strategies must have the same length")
+    stage_device_groups = strategy.get("stage_device_groups")
+    if stage_device_groups is None:
+        device_groups = _contiguous_stage_groups_for_stage_strategies(stage_strategies, config)
+    else:
+        device_groups = tuple(tuple(group) for group in stage_device_groups)
+    if len(device_groups) != len(stage_ranges):
+        raise ValueError("stage_device_groups must match stage count")
+    stage_device_types = strategy.get("stage_device_types")
+    stage_segments = []
+    for index, (stage_range, stage_strategy) in enumerate(zip(stage_ranges, stage_strategies, strict=True)):
+        if len(stage_range) != 2:
+            raise ValueError("stage_partition_ranges must contain [start, end] pairs")
+        segment_strategy = dict(stage_strategy)
+        segment_strategy["stage_runtime_bridge"] = True
+        if stage_device_types is not None:
+            segment_strategy["device_type"] = stage_device_types[index]
+        stage_segments.append(
+            (
+                SegmentPlan(
+                    start=int(stage_range[0]),
+                    end=int(stage_range[1]),
+                    strategy=segment_strategy,
+                ),
+            )
+        )
+    return tuple(stage_segments), device_groups
+
+
 def _stage_layer_counts(num_layers: int, strategy) -> tuple[int, ...]:
     pp_size = strategy["pipeline_model_parallel_size"]
     if pp_size == 1:
@@ -142,6 +182,19 @@ def _default_edge_layer_counts(num_layers: int, pp_size: int) -> tuple[int, int]
     return first_layers, last_layers
 
 
+def _contiguous_stage_groups_for_stage_strategies(stage_strategies, config):
+    world_size = _resolve_world_size(config)
+    counts = tuple(_required_stage_world_size(strategy) for strategy in stage_strategies)
+    if sum(counts) != world_size:
+        raise ValueError("stage strategy world sizes must sum to contract world_size")
+    offset = 0
+    groups = []
+    for count in counts:
+        groups.append(tuple(range(offset, offset + count)))
+        offset += count
+    return tuple(groups)
+
+
 def _contiguous_stage_groups(world_size: int, pp_size: int) -> tuple[tuple[int, ...], ...]:
     if world_size % pp_size != 0:
         raise ValueError("world_size must be divisible by pipeline_model_parallel_size")
@@ -149,6 +202,18 @@ def _contiguous_stage_groups(world_size: int, pp_size: int) -> tuple[tuple[int, 
     return tuple(
         tuple(range(offset, offset + stage_group_size))
         for offset in range(0, world_size, stage_group_size)
+    )
+
+
+def _has_explicit_stage_metadata(strategy) -> bool:
+    return "stage_partition_ranges" in strategy and "stage_strategies" in strategy
+
+
+def _required_stage_world_size(strategy) -> int:
+    return (
+        int(strategy["data_parallel_size"])
+        * int(strategy["tensor_model_parallel_size"])
+        * int(strategy["context_parallel_size"])
     )
 
 
