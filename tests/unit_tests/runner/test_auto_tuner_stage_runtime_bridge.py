@@ -4,16 +4,36 @@ from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.generate import Generator
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
-from flagscale.runner.auto_tuner.plan.summary import plan_kind, segment_count, summarize_execution_contract, summarize_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
+from flagscale.runner.auto_tuner.search.pp_first_assignment import (
+    generate_assignment_candidates,
+)
+from flagscale.runner.auto_tuner.search.pp_first_partition import (
+    build_layer_count_balanced_partition,
+)
+from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
 
 
 def _chip_profile():
     return {
         "identity": {"name": "nvidia_l20", "vendor": "nvidia", "chip_class": "gpu"},
-        "memory": {"total_memory_mb": 46000},
-        "compute": {"bf16_tflops": 119.5},
-        "interconnect": {"intra_node": {"fabric": "pcie"}},
+        "memory": {"total_memory_mb": 46000, "bandwidth_gbps": 864},
+        "compute": {"bf16_tflops": 119.5, "attention_tflops": 119.5},
+        "interconnect": {
+            "intra_node": {
+                "fabric": "pcie",
+                "p2p_bandwidth_gbps": 64,
+                "p2p_latency_us": 3,
+                "all_reduce_bandwidth_gbps": 45,
+                "all_reduce_latency_us": 8,
+            },
+            "host_device": {"bandwidth_gbps": 24, "latency_us": 10},
+        },
+        "kernel_support": {
+            "transformer_engine": True,
+            "flash_attention": True,
+            "fused_rmsnorm": True,
+        },
         "topology": {"max_nodes": 1, "devices_per_node": 4, "homogeneous_only": True},
         "strategy_hints": {
             "default_search_priority": "performance",
@@ -60,6 +80,7 @@ def _config(tmp_path, *, with_profile=False):
                     "hidden_size": 8,
                     "num_attention_heads": 4,
                     "seq_length": 16,
+                    "padded_vocab_size": 256,
                     "eval_iters": 10,
                     "optimizer": {"lr_scheduler": {"lr": 1e-5, "min_lr": 0}},
                 },
@@ -123,21 +144,19 @@ def _stage_hetero_strategy(**overrides):
     return strategy
 
 
-def _dp_style_stage_hetero_strategy(config):
-    strategy = _stage_hetero_strategy()
-    plan = lower_strategy_to_plan(strategy, config)
-    strategy.update(
-        {
-            "plan_kind": plan_kind(plan),
-            "stage_count": len(plan.stages),
-            "segment_count": segment_count(plan),
-            "runtime_mode": "stage-executable",
-            "runtime_executable": True,
-            "execution_contract": summarize_execution_contract(plan),
-            "plan_summary": summarize_plan(plan),
-        }
-    )
-    return strategy
+def _flatten_meshes(stage_strategies):
+    flattened = []
+    for stage in stage_strategies:
+        flattened.extend(
+            [
+                stage["tensor_model_parallel_size"],
+                stage["context_parallel_size"],
+                stage["expert_model_parallel_size"],
+                stage["data_parallel_size"],
+                1,
+            ]
+        )
+    return flattened
 
 
 def test_lower_strategy_to_plan_builds_stage_heterogeneous_plan_from_explicit_stage_metadata(
@@ -196,16 +215,40 @@ def test_generator_materializes_stage_hetero_runtime_config(tmp_path):
     assert task.train.system.sequence_parallel is True
 
 
-def test_generator_materializes_dp_style_stage_chain_runtime_config(tmp_path):
+def test_generator_materializes_dp_assignment_output_runtime_config(tmp_path):
     config = _config(tmp_path, with_profile=True)
+    config.experiment.auto_tuner.planner = {
+        "name": "pp_first",
+        "assignment_solver": "dp",
+        "max_stage_candidates_per_stage": 2,
+        "max_dp_results_per_partition": 2,
+    }
+    searcher = PPFirstSearcher(config)
+    partition = build_layer_count_balanced_partition(num_layers=4, pp_degree=2, world_size=4)
+    strategy = generate_assignment_candidates(
+        searcher=searcher,
+        space=searcher.space,
+        config=config,
+        pp_degree=2,
+        max_assignments=1,
+        partition=partition,
+    )[0]
 
-    task = Generator(config).gen(_dp_style_stage_hetero_strategy(config))
+    assert strategy["decoder_first_pipeline_num_layers"] == 2
+    assert strategy["decoder_last_pipeline_num_layers"] == 2
+    assert strategy["stage_partition_ranges"] == [[0, 1], [2, 3]]
+    assert len(strategy["stage_strategies"]) == 2
+
+    strategy["idx"] = 0
+    task = Generator(config).gen(strategy)
 
     assert task.experiment.auto_tuner.plan.plan_kind == "stage-heterogeneous"
     assert task.experiment.auto_tuner.plan.runtime_mode == "stage-executable"
     assert task.train.system.hetero.enable_hetero is True
     assert task.train.system.hetero.hetero_pipeline_layer_split == [2, 2]
-    assert task.train.system.hetero.hetero_process_meshes == [2, 1, 1, 1, 1, 1, 1, 1, 2, 1]
+    assert task.train.system.hetero.hetero_process_meshes == _flatten_meshes(
+        strategy["stage_strategies"]
+    )
     assert task.train.system.hetero.hetero_device_types == ["nvidia_l20", "nvidia_l20"]
     assert task.train.system.hetero.hetero_current_device_type == "nvidia_l20"
 
