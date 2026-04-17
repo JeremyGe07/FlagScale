@@ -6,6 +6,7 @@ from flagscale.runner.auto_tuner.search.pp_first_partition import (
     PartitionCandidate,
     build_layer_count_balanced_partition,
 )
+import flagscale.runner.auto_tuner.search.pp_first_stage_candidates as stage_candidates_mod
 from flagscale.runner.auto_tuner.search.pp_first_searcher import PPFirstSearcher
 from flagscale.runner.auto_tuner.search.pp_first_stage_candidates import (
     build_stage_candidates,
@@ -125,27 +126,47 @@ def test_build_stage_candidates_prunes_invalid_and_keeps_budget(tmp_path):
     assert candidates[0]["stage_time_cost"] <= candidates[1]["stage_time_cost"]
 
 
-def test_build_stage_candidates_rejects_stage_device_group_mesh_mismatch(tmp_path):
+def test_build_stage_candidates_rejects_stage_device_group_mesh_mismatch(tmp_path, monkeypatch):
     config = _config(tmp_path, cards=4, global_batch_size=8)
     searcher = PPFirstSearcher(config)
-    partition = PartitionCandidate(
-        pp_degree=2,
-        stage_ranges=((0, 4), (5, 9)),
-        device_groups=((0,), (1, 2, 3)),
-        partition_policy="layer_count_balanced",
-        topology_signature="manual",
-        provenance="test",
+    partition = build_layer_count_balanced_partition(num_layers=10, pp_degree=2, world_size=4)
+    bad_candidate = {
+        "data_parallel_size": 1,
+        "use_distributed_optimizer": False,
+        "tensor_model_parallel_size": 1,
+        "sequence_parallel": False,
+        "pipeline_model_parallel_size": 2,
+        "num_layers_per_virtual_pipeline_stage": None,
+        "use_recompute": False,
+        "recompute_method": None,
+        "recompute_granularity": None,
+        "recompute_num_layers": None,
+        "micro_batch_size": 2,
+        "context_parallel_size": 1,
+        "expert_model_parallel_size": 1,
+        "acc_step": 4,
+        "decoder_first_pipeline_num_layers": None,
+        "decoder_last_pipeline_num_layers": None,
+    }
+    good_candidate = dict(bad_candidate, tensor_model_parallel_size=2)
+
+    monkeypatch.setattr(
+        stage_candidates_mod,
+        "_generate_stage_candidates",
+        lambda searcher, space, config: [bad_candidate, good_candidate],
     )
 
-    with pytest.raises(ValueError, match="device_group|mesh"):
-        build_stage_candidates(
-            searcher=searcher,
-            space=searcher.space,
-            config=config,
-            partition=partition,
-            stage_index=0,
-            max_stage_candidates=2,
-        )
+    candidates = build_stage_candidates(
+        searcher=searcher,
+        space=searcher.space,
+        config=config,
+        partition=partition,
+        stage_index=0,
+        max_stage_candidates=2,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["tensor_model_parallel_size"] == 2
 
 
 def test_build_stage_candidates_rejects_global_batch_divisibility(tmp_path):
