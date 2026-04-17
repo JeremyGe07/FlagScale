@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from numbers import Integral
 import math
 
 BYTES_PER_MEGABYTE = 1024.0 * 1024.0
@@ -10,6 +11,7 @@ ACTIVATION_TRANSFER_COST_PER_MB_MS = 1.0
 def estimate_transition_cost(previous_stage, current_stage, config):
     previous = _validate_stage(previous_stage, "previous_stage")
     current = _validate_stage(current_stage, "current_stage")
+    _validate_stage_boundary(previous, current)
     hidden_size = _read_model_dimension(config, "hidden_size")
     seq_length = _read_model_dimension(config, "seq_length")
 
@@ -51,7 +53,7 @@ def _activation_transfer_cost(previous, current, hidden_size, seq_length):
 
 
 def _validate_stage(stage, stage_name):
-    if not isinstance(stage, dict):
+    if not isinstance(stage, Mapping):
         raise ValueError(f"{stage_name} must be a mapping")
     required_fields = (
         "data_parallel_size",
@@ -61,8 +63,20 @@ def _validate_stage(stage, stage_name):
     )
     validated = {}
     for field in required_fields:
-        validated[field] = _require_positive_number(stage.get(field), f"{stage_name}.{field}")
+        validated[field] = _require_positive_integer(
+            stage.get(field),
+            f"{stage_name}.{field}",
+        )
     return validated
+
+
+def _validate_stage_boundary(previous, current):
+    _require_matching_dimension(
+        previous,
+        current,
+        "pipeline_model_parallel_size",
+    )
+    _require_matching_dimension(previous, current, "micro_batch_size")
 
 
 def _read_model_dimension(config, field_name):
@@ -77,17 +91,34 @@ def _read_model_dimension(config, field_name):
 
 
 def _boundary_micro_batch_size(previous, current):
-    previous_mb = previous["micro_batch_size"]
-    current_mb = current["micro_batch_size"]
-    if previous_mb != current_mb:
-        raise ValueError("micro_batch_size must match across a stage boundary")
-    return previous_mb
+    return previous["micro_batch_size"]
+
+
+def _require_matching_dimension(previous, current, field_name):
+    if previous[field_name] != current[field_name]:
+        raise ValueError(f"{field_name} must match across a stage boundary")
+
+
+def _require_positive_integer(value, field_name):
+    if value is None:
+        raise ValueError(f"{field_name} is required")
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"{field_name} must be a positive integer")
+    integer = int(value)
+    if integer <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return integer
 
 
 def _require_positive_number(value, field_name):
     if value is None:
         raise ValueError(f"{field_name} is required")
-    numeric = float(value)
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a positive number")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive number") from exc
     if not math.isfinite(numeric):
         raise ValueError(f"{field_name} must be finite")
     if numeric <= 0:
