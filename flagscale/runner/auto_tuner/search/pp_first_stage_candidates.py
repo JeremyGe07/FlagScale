@@ -5,8 +5,8 @@ from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
 from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
-from flagscale.runner.auto_tuner.search.algorithm import sort_by_chip_score
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
+from flagscale.runner.auto_tuner.search.pp_first_selection import sort_estimate_candidates
 
 
 def build_stage_candidates(
@@ -21,6 +21,7 @@ def build_stage_candidates(
     max_stage_candidates = _resolve_max_stage_candidates(config, max_stage_candidates)
     if max_stage_candidates <= 0:
         raise ValueError("max_stage_candidates must be positive")
+    _validate_stage_index(partition, stage_index)
 
     stage_range = tuple(partition.stage_ranges[stage_index])
     stage_device_group = tuple(partition.device_groups[stage_index])
@@ -53,7 +54,7 @@ def build_stage_candidates(
         if last_error is not None:
             raise last_error
         raise ValueError("No executable stage candidates matched the stage constraints.")
-    return _sort_stage_candidates(valid_candidates, config)[:max_stage_candidates]
+    return sort_estimate_candidates(valid_candidates, config)[:max_stage_candidates]
 
 
 def _resolve_max_stage_candidates(config, max_stage_candidates):
@@ -63,6 +64,11 @@ def _resolve_max_stage_candidates(config, max_stage_candidates):
     if "max_stage_candidates_per_stage" not in planner_cfg:
         raise ValueError("planner.max_stage_candidates_per_stage is required")
     return planner_cfg["max_stage_candidates_per_stage"]
+
+
+def _validate_stage_index(partition, stage_index):
+    if stage_index < 0 or stage_index >= len(partition.stage_ranges):
+        raise ValueError("stage_index is out of range for partition")
 
 
 def _validate_stage_context(space, config, partition, stage_device_group):
@@ -197,20 +203,6 @@ def _resolve_memory_limit_mb(config):
     if profile is None:
         return None
     return float(profile["memory"]["total_memory_mb"])
-
-
-def _sort_stage_candidates(candidates, config):
-    if config.experiment.auto_tuner.algo.get("use_profiled_time_cost", False):
-        return sorted(candidates, key=lambda candidate: candidate["stage_time_cost"])
-    if config.experiment.auto_tuner.algo.get("chip_aware_scoring", False):
-        return sorted(candidates, key=sort_by_chip_score, reverse=True)
-    if "memory_model" in config.experiment.auto_tuner:
-        return sorted(
-            candidates,
-            key=lambda candidate: candidate["stage_memory_model"],
-            reverse=True,
-        )
-    return candidates
 
 
 def _attach_chip_score(strategy, config):
