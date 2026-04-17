@@ -144,7 +144,10 @@ def _runtime_execution_key(strategy):
     key = tuple((field, _hashable_value(strategy.get(field))) for field in RUNTIME_STRATEGY_KEYS)
     if "stage_strategies" not in strategy:
         return key
-    return key + (("stage_strategies", _stage_runtime_signature(strategy["stage_strategies"])),)
+    return key + (
+        ("stage_strategies", _stage_runtime_signature(strategy["stage_strategies"])),
+        ("stage_layout", _stage_layout_signature(strategy)),
+    )
 
 
 def _has_runtime_identity(strategy):
@@ -166,6 +169,18 @@ def _stage_runtime_signature(stage_strategies):
             for field in RUNTIME_STRATEGY_KEYS
         )
         for stage in stage_strategies
+    )
+
+
+def _stage_layout_signature(strategy):
+    return tuple(
+        (field, _hashable_value(strategy.get(field)))
+        for field in (
+            "stage_partition_ranges",
+            "stage_device_groups",
+            "stage_device_types",
+        )
+        if field in strategy
     )
 
 

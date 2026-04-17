@@ -201,6 +201,9 @@ def _materialize_dp_assignment_candidate(partition, chain):
     strategy["stage_strategies"] = tuple(dict(item) for item in chain.stage_strategies)
     strategy["stage_partition_ranges"] = [list(rng) for rng in partition.stage_ranges]
     strategy["stage_device_groups"] = [list(group) for group in partition.device_groups]
+    decoder_first, decoder_last = _stage_layer_counts(partition.stage_ranges)
+    strategy["decoder_first_pipeline_num_layers"] = decoder_first
+    strategy["decoder_last_pipeline_num_layers"] = decoder_last
     strategy["num_layers"] = partition.stage_ranges[-1][1] + 1
     strategy["pipeline_model_parallel_size"] = partition.pp_degree
     strategy["partition_policy"] = partition.partition_policy
@@ -244,6 +247,12 @@ def _strip_stage_local_metadata(strategy):
         "dp_aggregate_cost",
     ):
         strategy.pop(key, None)
+
+
+def _stage_layer_counts(stage_ranges):
+    first_range = stage_ranges[0]
+    last_range = stage_ranges[-1]
+    return first_range[1] - first_range[0] + 1, last_range[1] - last_range[0] + 1
 
 
 def _planner_cfg(config):
