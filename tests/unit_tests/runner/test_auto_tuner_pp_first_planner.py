@@ -236,6 +236,61 @@ def test_pp_first_searcher_injects_partition_metadata(tmp_path):
     assert any(flag.startswith("runtime_mode:") for flag in first["legality_flags"])
 
 
+def test_pp_first_searcher_defaults_assignment_solver_to_enumerate(tmp_path):
+    config = _config(tmp_path)
+    config.experiment.auto_tuner.planner = {"name": "pp_first"}
+
+    searcher = PPFirstSearcher(config)
+
+    assert searcher.strategies
+    assert all("stage_strategies" not in strategy for strategy in searcher.strategies)
+    assert {
+        strategy["planner_budget"]["assignment_solver"] for strategy in searcher.strategies
+    } == {"enumerate"}
+
+
+def test_pp_first_searcher_routes_to_dp_assignment_solver(tmp_path):
+    config = _config(tmp_path)
+    config.experiment.auto_tuner.planner = {
+        "name": "pp_first",
+        "assignment_solver": "dp",
+        "max_stage_candidates_per_stage": 2,
+        "max_dp_results_per_partition": 2,
+    }
+
+    searcher = PPFirstSearcher(config)
+
+    assert searcher.strategies
+    assert any("stage_strategies" in strategy for strategy in searcher.strategies)
+    assert all(strategy["planner_name"] == "pp_first" for strategy in searcher.strategies)
+    assert {
+        strategy["planner_budget"]["assignment_solver"] for strategy in searcher.strategies
+    } == {"dp"}
+
+
+def test_pp_first_searcher_dp_path_attaches_stage_metadata(tmp_path):
+    config = _config(tmp_path)
+    config.experiment.auto_tuner.planner = {
+        "name": "pp_first",
+        "assignment_solver": "dp",
+        "max_stage_candidates_per_stage": 2,
+        "max_dp_results_per_partition": 2,
+    }
+
+    searcher = PPFirstSearcher(config)
+    strategy = next(item for item in searcher.strategies if "stage_strategies" in item)
+
+    assert "dp_aggregate_cost" in strategy
+    assert strategy["planner_budget"]["max_stage_candidates_per_stage"] == 2
+    assert strategy["planner_budget"]["max_dp_results_per_partition"] == 2
+    assert strategy["stage_strategies"]
+    assert strategy["partition_policy"] in {POLICY_LAYER_COUNT_BALANCED, POLICY_PARAM_BALANCED}
+    assert "stage_partition_ranges" in strategy
+    assert "stage_device_groups" in strategy
+    assert len(strategy["stage_partition_ranges"]) == len(strategy["stage_strategies"])
+    assert len(strategy["stage_device_groups"]) == len(strategy["stage_strategies"])
+
+
 def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):
     config = _config(tmp_path)
     config.experiment.auto_tuner.planner = {

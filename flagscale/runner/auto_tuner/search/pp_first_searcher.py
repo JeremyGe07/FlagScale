@@ -22,6 +22,7 @@ from flagscale.runner.auto_tuner.search.pp_first_selection import (
 DEFAULT_MAX_PP_CANDIDATES = 4
 DEFAULT_MAX_PARTITIONS_PER_PP = 1
 DEFAULT_MAX_ASSIGNMENTS_PER_PARTITION = 256
+DEFAULT_ASSIGNMENT_SOLVER = "enumerate"
 RUNTIME_INEXPRESSIBLE_PARTITION = "runtime-inexpressible-partition"
 
 
@@ -75,6 +76,7 @@ class PPFirstSearcher(Searcher):
                     config=config,
                     pp_degree=pp_degree,
                     max_assignments=max_assignments,
+                    partition=partition,
                 )
                 for assignment_index, strategy in enumerate(
                     partition_strategies
@@ -110,18 +112,7 @@ class PPFirstSearcher(Searcher):
         for strategy in self.strategies:
             strategy["planner_name"] = "pp_first"
             strategy["topk_plans_for_short_run"] = topk
-            strategy["planner_budget"] = {
-                "max_pp_candidates": _planner_cfg(self.config).get(
-                    "max_pp_candidates", DEFAULT_MAX_PP_CANDIDATES
-                ),
-                "max_partitions_per_pp": _planner_cfg(self.config).get(
-                    "max_partitions_per_pp", DEFAULT_MAX_PARTITIONS_PER_PP
-                ),
-                "max_assignments_per_partition": _planner_cfg(self.config).get(
-                    "max_assignments_per_partition", DEFAULT_MAX_ASSIGNMENTS_PER_PARTITION
-                ),
-                "topk_plans_for_short_run": topk,
-            }
+            strategy["planner_budget"] = _planner_budget(self.config, topk)
             strategy["estimate_metric"] = estimate_metric
             strategy["estimate_rank"] = estimate_rank_by_id[id(strategy)]
             strategy["estimate_value"] = estimate_value(strategy, estimate_metric)
@@ -145,6 +136,31 @@ class PPFirstSearcher(Searcher):
 
 def _planner_cfg(config):
     return config.experiment.auto_tuner.get("planner", {})
+
+
+def _planner_budget(config, topk):
+    planner_cfg = _planner_cfg(config)
+    return {
+        "assignment_solver": planner_cfg.get(
+            "assignment_solver", DEFAULT_ASSIGNMENT_SOLVER
+        ),
+        "max_pp_candidates": planner_cfg.get(
+            "max_pp_candidates", DEFAULT_MAX_PP_CANDIDATES
+        ),
+        "max_partitions_per_pp": planner_cfg.get(
+            "max_partitions_per_pp", DEFAULT_MAX_PARTITIONS_PER_PP
+        ),
+        "max_assignments_per_partition": planner_cfg.get(
+            "max_assignments_per_partition", DEFAULT_MAX_ASSIGNMENTS_PER_PARTITION
+        ),
+        "max_stage_candidates_per_stage": planner_cfg.get(
+            "max_stage_candidates_per_stage"
+        ),
+        "max_dp_results_per_partition": planner_cfg.get(
+            "max_dp_results_per_partition"
+        ),
+        "topk_plans_for_short_run": topk,
+    }
 
 
 def _build_estimated_stage_costs(strategy):
