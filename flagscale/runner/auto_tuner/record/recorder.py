@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
+from flagscale.runner.auto_tuner.record.serialization import dump_json_string
+
 
 class Recorder:
 
@@ -306,9 +308,7 @@ class Recorder:
             return ""
         if isinstance(v, (int, float, bool, str)):
             return str(v)
-        if OmegaConf.is_config(v):
-            v = OmegaConf.to_container(v, resolve=True)
-        return json.dumps(v)
+        return dump_json_string(v)
 
     def save(self, history):
         sorted_history = self.sort(history)
