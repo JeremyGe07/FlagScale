@@ -138,6 +138,21 @@ def _lowering_style_strategy(**overrides):
     return strategy
 
 
+def _alias_only_segment_strategy(**overrides):
+    strategy = {
+        "cp": 1,
+        "dp": 1,
+        "device_type": "mlu290",
+        "ep": 1,
+        "pp": 1,
+        "sequence_parallel": True,
+        "tp": 1,
+        "use_distributed_optimizer": False,
+    }
+    strategy.update(overrides)
+    return strategy
+
+
 def _segment_plan(
     *,
     contract_gbs,
@@ -196,7 +211,7 @@ def test_validate_model_plan_accepts_segment_executable_subset():
     result = validate_model_plan(plan)
 
     assert result.runtime_mode == "segment-executable"
-    assert is_runtime_executable_plan(plan) is True
+    assert is_runtime_executable_plan(plan) is False
 
 
 def test_validate_model_plan_accepts_segment_executable_subset_without_pp_local():
@@ -204,16 +219,16 @@ def test_validate_model_plan_accepts_segment_executable_subset_without_pp_local(
         StagePlan(
             stage_id=0,
             segments=(
-                SegmentPlan(start=0, end=0, strategy=_lowering_style_strategy(tp=2, dp=1)),
-                SegmentPlan(start=1, end=1, strategy=_lowering_style_strategy(tp=1, dp=2)),
+                SegmentPlan(start=0, end=0, strategy=_alias_only_segment_strategy(tp=2, dp=1)),
+                SegmentPlan(start=1, end=1, strategy=_alias_only_segment_strategy(tp=1, dp=2)),
             ),
             device_group=(0, 1),
         ),
         StagePlan(
             stage_id=1,
             segments=(
-                SegmentPlan(start=2, end=2, strategy=_lowering_style_strategy(tp=1, dp=2)),
-                SegmentPlan(start=3, end=3, strategy=_lowering_style_strategy(tp=2, dp=1)),
+                SegmentPlan(start=2, end=2, strategy=_alias_only_segment_strategy(tp=1, dp=2)),
+                SegmentPlan(start=3, end=3, strategy=_alias_only_segment_strategy(tp=2, dp=1)),
             ),
             device_group=(2, 3),
         ),
@@ -232,6 +247,41 @@ def test_validate_model_plan_accepts_segment_executable_subset_without_pp_local(
                 1,
                 _mesh(tp=1, dp=2, pipeline_model_parallel_size=1),
                 _mesh(tp=2, dp=1, pipeline_model_parallel_size=1),
+            ),
+        ),
+    )
+
+    result = validate_model_plan(plan)
+
+    assert result.runtime_mode == "segment-executable"
+
+
+def test_validate_model_plan_accepts_extra_non_segment_transitions():
+    plan = _segment_plan(
+        contract_gbs=8,
+        acc_step=4,
+        stage0_meshes=(
+            {"tp": 2, "cp": 1, "ep": 1, "dp": 1, "pp_local": 1},
+            {"tp": 1, "cp": 1, "ep": 1, "dp": 2, "pp_local": 1},
+        ),
+        stage1_meshes=(
+            {"tp": 1, "cp": 1, "ep": 1, "dp": 2, "pp_local": 1},
+            {"tp": 2, "cp": 1, "ep": 1, "dp": 1, "pp_local": 1},
+        ),
+    )
+    plan = ModelPlan(
+        stages=plan.stages,
+        contract=plan.contract,
+        total_layers=plan.total_layers,
+        transitions=plan.transitions
+        + (
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=1,
+                kind="pipeline",
+                source_segment_index=1,
+                target_segment_index=0,
+                metadata={},
             ),
         ),
     )

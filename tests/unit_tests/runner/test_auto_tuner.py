@@ -219,7 +219,7 @@ def test_generator_rejects_unsupported_segment_heterogeneous_plan_execution(tmp_
         )
 
 
-def test_generator_accepts_segment_heterogeneous_runtime_metadata(tmp_path):
+def test_generator_reports_segment_heterogeneous_metadata_but_not_executable(tmp_path):
     config = OmegaConf.create(
         {
             "experiment": {
@@ -247,7 +247,7 @@ def test_generator_accepts_segment_heterogeneous_runtime_metadata(tmp_path):
         }
     )
 
-    task = Generator(config).gen(
+    metadata = Generator(config)._build_plan_runtime_metadata(
         {
             "idx": 1,
             "data_parallel_size": 1,
@@ -268,7 +268,7 @@ def test_generator_accepts_segment_heterogeneous_runtime_metadata(tmp_path):
             "stage_count": 2,
             "segment_count": 4,
             "runtime_mode": "segment-executable",
-            "runtime_executable": True,
+            "runtime_executable": False,
             "execution_contract": {
                 "world_size": 2,
                 "micro_batch_size": 2,
@@ -280,12 +280,13 @@ def test_generator_accepts_segment_heterogeneous_runtime_metadata(tmp_path):
                 "vpp_stage_segment_counts": [2, 2],
                 "contract": {"global_batch_size": 8},
             },
-        }
+        },
+        config,
     )
 
-    assert task.experiment.auto_tuner.plan.plan_kind == "segment-heterogeneous"
-    assert task.experiment.auto_tuner.plan.runtime_mode == "segment-executable"
-    assert task.experiment.auto_tuner.plan.runtime_executable is True
+    assert metadata["plan_kind"] == "segment-heterogeneous"
+    assert metadata["runtime_mode"] == "segment-executable"
+    assert metadata["runtime_executable"] is False
 
 
 def test_generator_rejects_incomplete_prefilled_plan_metadata(tmp_path):

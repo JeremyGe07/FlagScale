@@ -5,12 +5,7 @@ from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan, summarize_plan
 from flagscale.runner.auto_tuner.plan.runtime import build_stage_hetero_runtime_overrides
-from flagscale.runner.auto_tuner.plan.summary import (
-    is_runtime_executable_plan,
-    plan_kind,
-    segment_count,
-    summarize_execution_contract,
-)
+from flagscale.runner.auto_tuner.plan.summary import plan_kind, segment_count, summarize_execution_contract
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
@@ -112,7 +107,7 @@ class Generator:
             "stage_count": len(plan.stages),
             "segment_count": segment_count(plan),
             "runtime_mode": validation.runtime_mode,
-            "runtime_executable": is_runtime_executable_plan(plan),
+            "runtime_executable": validation.runtime_mode == "stage-executable",
             "execution_contract": summarize_execution_contract(plan),
             "plan_summary": summarize_plan(plan),
         }

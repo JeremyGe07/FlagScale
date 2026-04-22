@@ -71,17 +71,23 @@ def _validate_fixed_fields(
     reference: Mapping[str, object],
     segment: SegmentPlan,
 ) -> None:
-    if _strategy_value(segment.strategy, "context_parallel_size") != _strategy_value(reference, "context_parallel_size"):
+    if _strategy_value(segment.strategy, ("context_parallel_size", "cp")) != _strategy_value(
+        reference, ("context_parallel_size", "cp")
+    ):
         raise ValueError(f"stage {stage_id} segment {index} context_parallel_size must be consistent")
-    if _strategy_value(segment.strategy, "expert_model_parallel_size") != _strategy_value(
-        reference, "expert_model_parallel_size"
+    if _strategy_value(segment.strategy, ("expert_model_parallel_size", "ep")) != _strategy_value(
+        reference, ("expert_model_parallel_size", "ep")
     ):
         raise ValueError(f"stage {stage_id} segment {index} expert_model_parallel_size must be consistent")
-    if _strategy_value(segment.strategy, "use_distributed_optimizer") != _strategy_value(
-        reference, "use_distributed_optimizer"
+    if _strategy_value(segment.strategy, ("pipeline_model_parallel_size", "pp")) != _strategy_value(
+        reference, ("pipeline_model_parallel_size", "pp")
+    ):
+        raise ValueError(f"stage {stage_id} segment {index} pipeline_model_parallel_size must be consistent")
+    if _strategy_value(segment.strategy, ("use_distributed_optimizer",)) != _strategy_value(
+        reference, ("use_distributed_optimizer",)
     ):
         raise ValueError(f"stage {stage_id} segment {index} use_distributed_optimizer must be consistent")
-    if _strategy_value(segment.strategy, "device_type") != _strategy_value(reference, "device_type"):
+    if _strategy_value(segment.strategy, ("device_type",)) != _strategy_value(reference, ("device_type",)):
         raise ValueError(f"stage {stage_id} segment {index} device_type must be consistent")
 
 
@@ -93,6 +99,8 @@ def _validate_segment_transitions(plan: ModelPlan) -> None:
     }
     seen: set[tuple[int, int, int, int]] = set()
     for transition in plan.transitions:
+        if transition.kind != SEGMENT_REDISRIBUTION:
+            continue
         _validate_transition_metadata(transition)
         key = (
             transition.source_stage_id,
@@ -100,7 +108,7 @@ def _validate_segment_transitions(plan: ModelPlan) -> None:
             transition.source_segment_index,
             transition.target_segment_index,
         )
-        if transition.kind != SEGMENT_REDISRIBUTION or key not in expected:
+        if key not in expected:
             raise ValueError("segment-redistribution transition required for segment-executable plans")
         seen.add(key)
     missing = sorted(expected - seen)
@@ -166,5 +174,9 @@ def _strategy_int(strategy: Mapping[str, object], keys: tuple[str, ...]) -> int 
     return None
 
 
-def _strategy_value(strategy: Mapping[str, object], key: str):
-    return strategy.get(key)
+def _strategy_value(strategy: Mapping[str, object], keys: tuple[str, ...]):
+    for key in keys:
+        value = strategy.get(key)
+        if value is not None:
+            return value
+    return None
