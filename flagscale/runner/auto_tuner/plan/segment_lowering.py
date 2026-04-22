@@ -33,7 +33,7 @@ def build_segmented_stage_segments(
     if not segment_ranges:
         raise ValueError("segment_partition_ranges must not be empty")
     _validate_segment_ranges(stage_id, stage_range, segment_ranges)
-    start_offset = int(stage_range[0])
+    start_offset = _strict_int(stage_range[0], "stage range start")
     segments = []
     for segment_index, (segment_range, segment_strategy) in enumerate(
         zip(segment_ranges, segment_strategies, strict=True)
@@ -45,8 +45,8 @@ def build_segmented_stage_segments(
         _set_segment_local_pipeline_size(stage_id, segment_index, segment_strategy)
         segments.append(
             SegmentPlan(
-                start=start_offset + int(segment_range[0]),
-                end=start_offset + int(segment_range[1]),
+                start=start_offset + _strict_int(segment_range[0], "segment range start"),
+                end=start_offset + _strict_int(segment_range[1], "segment range end"),
                 strategy=segment_strategy,
             )
         )
@@ -101,11 +101,11 @@ def segment_mesh_metadata(strategy) -> dict[str, object]:
 
 def segment_local_pipeline_size(strategy) -> int:
     value = strategy.get("pp_local")
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
+    if value is not None:
+        return _strict_unit_pipeline_size(value, "pp_local")
     value = strategy.get("pipeline_model_parallel_size")
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
+    if value is not None:
+        return _strict_unit_pipeline_size(value, "pipeline_model_parallel_size")
     return 1
 
 
@@ -144,15 +144,15 @@ def required_parallel_world_size(strategy) -> int:
 
 
 def _validate_segment_ranges(stage_id, stage_range, segment_ranges):
-    stage_start = int(stage_range[0])
-    stage_end = int(stage_range[1])
+    stage_start = _strict_int(stage_range[0], "stage range start")
+    stage_end = _strict_int(stage_range[1], "stage range end")
     if stage_end < stage_start:
         raise ValueError(f"stage {stage_id} range is invalid")
     stage_length = stage_end - stage_start + 1
     expected_start = 0
     for segment_index, segment_range in enumerate(segment_ranges):
-        rel_start = int(segment_range[0])
-        rel_end = int(segment_range[1])
+        rel_start = _strict_int(segment_range[0], "segment_partition_ranges start")
+        rel_end = _strict_int(segment_range[1], "segment_partition_ranges end")
         if rel_start < 0 or rel_end < 0:
             raise ValueError("segment_partition_ranges must be non-negative")
         if rel_start > rel_end:
@@ -170,17 +170,33 @@ def _set_segment_local_pipeline_size(stage_id, segment_index, segment_strategy):
     pp_local = segment_strategy.get("pp_local")
     pipeline_model_parallel_size = segment_strategy.get("pipeline_model_parallel_size")
     if pp_local is not None:
-        if pp_local != 1:
-            raise ValueError(
-                f"stage {stage_id} segment {segment_index} segment-local pipeline size must be 1"
-            )
-        if pipeline_model_parallel_size is not None and pipeline_model_parallel_size != 1:
-            raise ValueError(
-                f"stage {stage_id} segment {segment_index} segment-local pipeline size must be 1"
+        _strict_unit_pipeline_size(
+            pp_local,
+            f"stage {stage_id} segment {segment_index} segment-local pipeline size",
+        )
+        if pipeline_model_parallel_size is not None:
+            _strict_unit_pipeline_size(
+                pipeline_model_parallel_size,
+                f"stage {stage_id} segment {segment_index} segment-local pipeline size",
             )
         return
-    if pipeline_model_parallel_size is not None and pipeline_model_parallel_size != 1:
-        raise ValueError(
-            f"stage {stage_id} segment {segment_index} segment-local pipeline size must be 1"
+    if pipeline_model_parallel_size is not None:
+        _strict_unit_pipeline_size(
+            pipeline_model_parallel_size,
+            f"stage {stage_id} segment {segment_index} segment-local pipeline size",
         )
     segment_strategy["pp_local"] = 1
+
+
+def _strict_int(value, label):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be a non-bool int")
+    return value
+
+
+def _strict_unit_pipeline_size(value, label):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{label} must be a non-bool int equal to 1")
+    if value != 1:
+        raise ValueError(f"{label} must be a non-bool int equal to 1")
+    return value

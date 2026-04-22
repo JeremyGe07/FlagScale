@@ -175,6 +175,9 @@ def test_lower_strategy_to_plan_rejects_half_configured_segment_metadata(
         ([[0, 0], [1, 2]], None, "within stage range"),
         ([[0, 0], [0, 1]], None, "contiguous"),
         ([[0, 0]], [dict(_segment_strategy(tp=2, dp=1))], "exactly cover"),
+        ([[True, 0], [1, 1]], None, "non-bool int"),
+        ([[1.0, 0], [1, 1]], None, "non-bool int"),
+        ([["1", 0], [1, 1]], None, "non-bool int"),
     ],
 )
 def test_lower_strategy_to_plan_rejects_malformed_nested_segment_ranges(
@@ -255,8 +258,21 @@ def test_lower_strategy_to_plan_rejects_inconsistent_nested_segment_world_size(t
 @pytest.mark.parametrize(
     ("segment_strategy_update", "expected_message"),
     [
-        ({"pp_local": 2}, "segment-local pipeline size must be 1"),
-        ({"pipeline_model_parallel_size": 2}, "segment-local pipeline size must be 1"),
+        ({"pp_local": 2}, "segment-local pipeline size must be a non-bool int equal to 1"),
+        ({"pp_local": True}, "segment-local pipeline size must be a non-bool int equal to 1"),
+        ({"pp_local": 1.0}, "segment-local pipeline size must be a non-bool int equal to 1"),
+        (
+            {"pipeline_model_parallel_size": 2},
+            "segment-local pipeline size must be a non-bool int equal to 1",
+        ),
+        (
+            {"pipeline_model_parallel_size": True},
+            "segment-local pipeline size must be a non-bool int equal to 1",
+        ),
+        (
+            {"pipeline_model_parallel_size": 1.0},
+            "segment-local pipeline size must be a non-bool int equal to 1",
+        ),
     ],
 )
 def test_lower_strategy_to_plan_rejects_non_unit_segment_local_pipeline_semantics(
