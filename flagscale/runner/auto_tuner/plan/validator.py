@@ -2,6 +2,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan, SegmentPlan, StagePlan
+from flagscale.runner.auto_tuner.plan.segment_validator import (
+    SEGMENT_EXECUTABLE,
+    validate_segment_executable_plan,
+)
 
 ANALYSIS_ONLY = "analysis-only"
 STAGE_EXECUTABLE = "stage-executable"
@@ -17,7 +21,7 @@ PARALLELISM_KEYS = (
 
 @dataclass(frozen=True)
 class PlanValidationResult:
-    runtime_mode: Literal["stage-executable", "analysis-only"]
+    runtime_mode: Literal["stage-executable", "segment-executable", "analysis-only"]
 
 
 def validate_model_plan(plan: ModelPlan) -> PlanValidationResult:
@@ -26,18 +30,24 @@ def validate_model_plan(plan: ModelPlan) -> PlanValidationResult:
     _validate_stage_segments(plan)
     _validate_global_coverage(plan)
     _validate_parallelism(plan)
-    _validate_global_batch_size(plan)
     _validate_explicit_device_groups(plan)
     if runtime_mode == STAGE_EXECUTABLE:
+        _validate_global_batch_size(plan)
         _validate_stage_executable_constraints(plan)
+    elif runtime_mode == SEGMENT_EXECUTABLE:
+        validate_segment_executable_plan(plan)
+    else:
+        _validate_global_batch_size(plan)
     return PlanValidationResult(runtime_mode=runtime_mode)
 
 
-def _runtime_mode(plan: ModelPlan) -> Literal["stage-executable", "analysis-only"]:
+def _runtime_mode(plan: ModelPlan) -> Literal["stage-executable", "segment-executable", "analysis-only"]:
     if plan.stages and (
         all(len(stage.segments) == 1 for stage in plan.stages) or _is_homogeneous_vpp_plan(plan)
     ):
         return STAGE_EXECUTABLE
+    if _is_segment_executable_candidate(plan):
+        return SEGMENT_EXECUTABLE
     return ANALYSIS_ONLY
 
 
@@ -321,6 +331,10 @@ def _is_stage_heterogeneous_plan(plan: ModelPlan) -> bool:
 
 def _is_stage_runtime_bridge_plan(plan: ModelPlan) -> bool:
     return any(stage.segments[0].strategy.get("stage_runtime_bridge") is True for stage in plan.stages)
+
+
+def _is_segment_executable_candidate(plan: ModelPlan) -> bool:
+    return any("pp_local" in segment.strategy for stage in plan.stages for segment in stage.segments)
 
 
 __all__ = ["PlanValidationResult", "validate_model_plan"]

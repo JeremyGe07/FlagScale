@@ -153,7 +153,7 @@ def test_generator_injects_plan_runtime_metadata_into_task_config(tmp_path):
     assert task.experiment.auto_tuner.plan.execution_contract.global_batch_size == 8
 
 
-def test_generator_rejects_segment_heterogeneous_plan_execution(tmp_path):
+def test_generator_rejects_unsupported_segment_heterogeneous_plan_execution(tmp_path):
     config = OmegaConf.create(
         {
             "experiment": {
@@ -219,7 +219,7 @@ def test_generator_rejects_segment_heterogeneous_plan_execution(tmp_path):
         )
 
 
-def test_generator_accepts_stage_heterogeneous_runtime_metadata(tmp_path):
+def test_generator_accepts_segment_heterogeneous_runtime_metadata(tmp_path):
     config = OmegaConf.create(
         {
             "experiment": {
@@ -253,7 +253,7 @@ def test_generator_accepts_stage_heterogeneous_runtime_metadata(tmp_path):
             "data_parallel_size": 1,
             "use_distributed_optimizer": False,
             "tensor_model_parallel_size": 1,
-            "sequence_parallel": False,
+            "sequence_parallel": True,
             "pipeline_model_parallel_size": 2,
             "num_layers_per_virtual_pipeline_stage": None,
             "recompute_method": None,
@@ -264,10 +264,10 @@ def test_generator_accepts_stage_heterogeneous_runtime_metadata(tmp_path):
             "expert_model_parallel_size": 1,
             "decoder_first_pipeline_num_layers": None,
             "decoder_last_pipeline_num_layers": None,
-            "plan_kind": "stage-heterogeneous",
+            "plan_kind": "segment-heterogeneous",
             "stage_count": 2,
-            "segment_count": 2,
-            "runtime_mode": "stage-executable",
+            "segment_count": 4,
+            "runtime_mode": "segment-executable",
             "runtime_executable": True,
             "execution_contract": {
                 "world_size": 2,
@@ -277,13 +277,14 @@ def test_generator_accepts_stage_heterogeneous_runtime_metadata(tmp_path):
             },
             "plan_summary": {
                 "stage_count": 2,
-                "vpp_stage_segment_counts": [1, 1],
+                "vpp_stage_segment_counts": [2, 2],
                 "contract": {"global_batch_size": 8},
             },
         }
     )
 
-    assert task.experiment.auto_tuner.plan.plan_kind == "stage-heterogeneous"
+    assert task.experiment.auto_tuner.plan.plan_kind == "segment-heterogeneous"
+    assert task.experiment.auto_tuner.plan.runtime_mode == "segment-executable"
     assert task.experiment.auto_tuner.plan.runtime_executable is True
 
 
