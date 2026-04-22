@@ -87,22 +87,28 @@ def _validate_fixed_fields(
 
 def _validate_segment_transitions(plan: ModelPlan) -> None:
     expected = {
-        (stage.stage_id, index, index + 1)
+        (stage.stage_id, stage.stage_id, index, index + 1)
         for stage in plan.stages
         for index in range(len(stage.segments) - 1)
     }
-    seen: set[tuple[int, int, int]] = set()
+    seen: set[tuple[int, int, int, int]] = set()
     for transition in plan.transitions:
         _validate_transition_metadata(transition)
-        key = (transition.source_stage_id, transition.source_segment_index, transition.target_segment_index)
+        key = (
+            transition.source_stage_id,
+            transition.target_stage_id,
+            transition.source_segment_index,
+            transition.target_segment_index,
+        )
         if transition.kind != SEGMENT_REDISRIBUTION or key not in expected:
             raise ValueError("segment-redistribution transition required for segment-executable plans")
         seen.add(key)
     missing = sorted(expected - seen)
     if missing:
-        stage_id, source_index, target_index = missing[0]
+        stage_id, target_stage_id, source_index, target_index = missing[0]
         raise ValueError(
-            f"missing segment-redistribution transition for stage {stage_id} segments {source_index}->{target_index}"
+            "missing segment-redistribution transition for "
+            f"stage {stage_id}->{target_stage_id} segments {source_index}->{target_index}"
         )
 
 

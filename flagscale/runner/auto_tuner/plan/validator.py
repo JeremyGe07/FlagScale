@@ -334,7 +334,13 @@ def _is_stage_runtime_bridge_plan(plan: ModelPlan) -> bool:
 
 
 def _is_segment_executable_candidate(plan: ModelPlan) -> bool:
-    return any("pp_local" in segment.strategy for stage in plan.stages for segment in stage.segments)
+    if not any(len(stage.segments) > 1 for stage in plan.stages):
+        return False
+    return all(
+        _strategy_int(segment.strategy, ("pipeline_model_parallel_size", "pp")) == 1
+        for stage in plan.stages
+        for segment in stage.segments
+    )
 
 
 __all__ = ["PlanValidationResult", "validate_model_plan"]
