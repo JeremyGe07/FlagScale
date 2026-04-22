@@ -10,7 +10,8 @@ MESH_KEYS = (
     ("expert_model_parallel_size", "ep"),
     ("data_parallel_size", "dp"),
 )
-PIPELINE_KEYS = ("pipeline_model_parallel_size", "pp_local", "pp")
+LOCAL_PIPELINE_KEYS = ("pp_local",)
+GLOBAL_PIPELINE_KEYS = ("pipeline_model_parallel_size", "pp")
 
 
 def validate_segment_executable_plan(plan: ModelPlan) -> None:
@@ -55,9 +56,9 @@ def _validate_stage_mesh_consistency(stage: StagePlan) -> None:
 
 
 def _validate_segment_mesh(stage_id: int, index: int, segment: SegmentPlan, device_count: int) -> None:
-    pp_local = _required_strategy_int(segment.strategy, PIPELINE_KEYS)
+    pp_local = _segment_local_pipeline_size(segment.strategy)
     if pp_local != 1:
-        raise ValueError(f"stage {stage_id} segment {index} pp_local must be 1")
+        raise ValueError(f"stage {stage_id} segment {index} segment-local pipeline size must be 1")
     mesh_size = pp_local
     for keys in MESH_KEYS:
         mesh_size *= _required_strategy_int(segment.strategy, keys)
@@ -79,10 +80,6 @@ def _validate_fixed_fields(
         reference, ("expert_model_parallel_size", "ep")
     ):
         raise ValueError(f"stage {stage_id} segment {index} expert_model_parallel_size must be consistent")
-    if _strategy_value(segment.strategy, ("pipeline_model_parallel_size", "pp")) != _strategy_value(
-        reference, ("pipeline_model_parallel_size", "pp")
-    ):
-        raise ValueError(f"stage {stage_id} segment {index} pipeline_model_parallel_size must be consistent")
     if _strategy_value(segment.strategy, ("use_distributed_optimizer",)) != _strategy_value(
         reference, ("use_distributed_optimizer",)
     ):
@@ -132,8 +129,8 @@ def _validate_transition_metadata(transition: TransitionPlan) -> None:
 
 
 def _validate_mesh_metadata(mesh: Mapping[str, object], label: str) -> None:
-    if _required_strategy_int(mesh, PIPELINE_KEYS) != 1:
-        raise ValueError(f"{label} pp_local must be 1")
+    if _segment_local_pipeline_size(mesh) != 1:
+        raise ValueError(f"{label} segment-local pipeline size must be 1")
     for keys in MESH_KEYS:
         _required_strategy_int(mesh, keys)
 
@@ -180,3 +177,10 @@ def _strategy_value(strategy: Mapping[str, object], keys: tuple[str, ...]):
         if value is not None:
             return value
     return None
+
+
+def _segment_local_pipeline_size(strategy: Mapping[str, object]) -> int:
+    explicit = _strategy_int(strategy, LOCAL_PIPELINE_KEYS)
+    if explicit is not None:
+        return explicit
+    return _required_strategy_int(strategy, GLOBAL_PIPELINE_KEYS)

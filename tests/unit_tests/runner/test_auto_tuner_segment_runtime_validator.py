@@ -153,6 +153,76 @@ def _alias_only_segment_strategy(**overrides):
     return strategy
 
 
+def _explicit_pp_local_segment_strategy(**overrides):
+    strategy = {
+        "context_parallel_size": 1,
+        "cp": 1,
+        "data_parallel_size": 1,
+        "dp": 1,
+        "device_type": "mlu290",
+        "expert_model_parallel_size": 1,
+        "ep": 1,
+        "pipeline_model_parallel_size": 2,
+        "pp": 2,
+        "pp_local": 1,
+        "sequence_parallel": True,
+        "tensor_model_parallel_size": 1,
+        "tp": 1,
+        "use_distributed_optimizer": False,
+    }
+    strategy.update(overrides)
+    if "tp" in overrides:
+        strategy["tensor_model_parallel_size"] = overrides["tp"]
+    if "tensor_model_parallel_size" in overrides:
+        strategy["tp"] = overrides["tensor_model_parallel_size"]
+    if "dp" in overrides:
+        strategy["data_parallel_size"] = overrides["dp"]
+    if "data_parallel_size" in overrides:
+        strategy["dp"] = overrides["data_parallel_size"]
+    if "cp" in overrides:
+        strategy["context_parallel_size"] = overrides["cp"]
+    if "context_parallel_size" in overrides:
+        strategy["cp"] = overrides["context_parallel_size"]
+    if "ep" in overrides:
+        strategy["expert_model_parallel_size"] = overrides["ep"]
+    if "expert_model_parallel_size" in overrides:
+        strategy["ep"] = overrides["expert_model_parallel_size"]
+    return strategy
+
+
+def _explicit_pp_local_mesh(**overrides):
+    mesh = {
+        "tp": 1,
+        "cp": 1,
+        "ep": 1,
+        "dp": 1,
+        "pp": 2,
+        "pp_local": 1,
+        "pipeline_model_parallel_size": 2,
+        "device_type": "mlu290",
+        "sequence_parallel": True,
+        "use_distributed_optimizer": False,
+    }
+    mesh.update(overrides)
+    if "tp" in overrides:
+        mesh["tensor_model_parallel_size"] = overrides["tp"]
+    if "tensor_model_parallel_size" in overrides:
+        mesh["tp"] = overrides["tensor_model_parallel_size"]
+    if "dp" in overrides:
+        mesh["data_parallel_size"] = overrides["dp"]
+    if "data_parallel_size" in overrides:
+        mesh["dp"] = overrides["data_parallel_size"]
+    if "cp" in overrides:
+        mesh["context_parallel_size"] = overrides["cp"]
+    if "context_parallel_size" in overrides:
+        mesh["cp"] = overrides["context_parallel_size"]
+    if "ep" in overrides:
+        mesh["expert_model_parallel_size"] = overrides["ep"]
+    if "expert_model_parallel_size" in overrides:
+        mesh["ep"] = overrides["expert_model_parallel_size"]
+    return mesh
+
+
 def _segment_plan(
     *,
     contract_gbs,
@@ -247,6 +317,72 @@ def test_validate_model_plan_accepts_segment_executable_subset_without_pp_local(
                 1,
                 _mesh(tp=1, dp=2, pipeline_model_parallel_size=1),
                 _mesh(tp=2, dp=1, pipeline_model_parallel_size=1),
+            ),
+        ),
+    )
+
+    result = validate_model_plan(plan)
+
+    assert result.runtime_mode == "segment-executable"
+
+
+def test_validate_model_plan_prefers_explicit_pp_local_over_global_pipeline_size():
+    stages = (
+        StagePlan(
+            stage_id=0,
+            segments=(
+                SegmentPlan(start=0, end=0, strategy=_explicit_pp_local_segment_strategy(tp=2, dp=1)),
+                SegmentPlan(start=1, end=1, strategy=_explicit_pp_local_segment_strategy(tp=1, dp=2)),
+            ),
+            device_group=(0, 1),
+        ),
+        StagePlan(
+            stage_id=1,
+            segments=(
+                SegmentPlan(start=2, end=2, strategy=_explicit_pp_local_segment_strategy(tp=1, dp=2)),
+                SegmentPlan(start=3, end=3, strategy=_explicit_pp_local_segment_strategy(tp=2, dp=1)),
+            ),
+            device_group=(2, 3),
+        ),
+    )
+    plan = ModelPlan(
+        total_layers=4,
+        contract=_contract(world_size=4),
+        stages=stages,
+        transitions=(
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=0,
+                kind="segment-redistribution",
+                source_segment_index=0,
+                target_segment_index=1,
+                metadata={
+                    "source_mesh": _explicit_pp_local_mesh(
+                        tp=2,
+                        dp=1,
+                    ),
+                    "target_mesh": _explicit_pp_local_mesh(
+                        tp=1,
+                        dp=2,
+                    ),
+                },
+            ),
+            TransitionPlan(
+                source_stage_id=1,
+                target_stage_id=1,
+                kind="segment-redistribution",
+                source_segment_index=0,
+                target_segment_index=1,
+                metadata={
+                    "source_mesh": _explicit_pp_local_mesh(
+                        tp=1,
+                        dp=2,
+                    ),
+                    "target_mesh": _explicit_pp_local_mesh(
+                        tp=2,
+                        dp=1,
+                    ),
+                },
             ),
         ),
     )

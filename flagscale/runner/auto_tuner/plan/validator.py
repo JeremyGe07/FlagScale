@@ -4,6 +4,7 @@ from typing import Literal
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan, SegmentPlan, StagePlan
 from flagscale.runner.auto_tuner.plan.segment_validator import (
     SEGMENT_EXECUTABLE,
+    _segment_local_pipeline_size,
     validate_segment_executable_plan,
 )
 
@@ -336,11 +337,7 @@ def _is_stage_runtime_bridge_plan(plan: ModelPlan) -> bool:
 def _is_segment_executable_candidate(plan: ModelPlan) -> bool:
     if not any(len(stage.segments) > 1 for stage in plan.stages):
         return False
-    return all(
-        _strategy_int(segment.strategy, ("pipeline_model_parallel_size", "pp")) == 1
-        for stage in plan.stages
-        for segment in stage.segments
-    )
+    return all(_segment_local_pipeline_size(segment.strategy) == 1 for stage in plan.stages for segment in stage.segments)
 
 
 __all__ = ["PlanValidationResult", "validate_model_plan"]

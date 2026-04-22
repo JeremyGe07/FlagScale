@@ -118,8 +118,8 @@ class Generator:
             return
         if not metadata["runtime_executable"]:
             raise ValueError(
-                "{} plan is analysis-only and cannot enter executable generator path".format(
-                    metadata["plan_kind"]
+                "{} plan is {} and cannot enter executable generator path".format(
+                    metadata["plan_kind"], metadata["runtime_mode"]
                 )
             )
         config.experiment.auto_tuner.plan = OmegaConf.merge(
