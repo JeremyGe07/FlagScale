@@ -3,8 +3,8 @@ from flagscale.runner.auto_tuner.plan.schema import (
     ModelPlan,
     SegmentPlan,
     StagePlan,
-    TransitionPlan,
 )
+from flagscale.runner.auto_tuner.plan.segment_lowering import build_explicit_stage_segments
 from flagscale.runner.auto_tuner.plan.summary import summarize_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
@@ -143,7 +143,7 @@ def _build_explicit_stage_plan(num_layers: int, strategy, config):
     ):
         if len(stage_range) != 2:
             raise ValueError("stage_partition_ranges must contain [start, end] pairs")
-        segments, stage_transitions = _build_explicit_stage_segments(
+        segments, stage_transitions = build_explicit_stage_segments(
             stage_id=index,
             stage_range=stage_range,
             stage_strategy=stage_strategy,
@@ -152,83 +152,6 @@ def _build_explicit_stage_plan(num_layers: int, strategy, config):
         stage_segments.append(segments)
         transitions.extend(stage_transitions)
     return tuple(stage_segments), device_groups, tuple(transitions)
-
-
-def _build_explicit_stage_segments(
-    stage_id: int,
-    stage_range,
-    stage_strategy,
-    stage_device_type=None,
-):
-    if _has_explicit_segment_metadata(stage_strategy):
-        return _build_segmented_stage_segments(
-            stage_id,
-            stage_range,
-            stage_strategy,
-            stage_device_type,
-        )
-    return _build_stage_runtime_bridge_segments(stage_range, stage_strategy, stage_device_type)
-
-
-def _build_segmented_stage_segments(
-    stage_id: int,
-    stage_range,
-    stage_strategy,
-    stage_device_type=None,
-):
-    segment_ranges = tuple(tuple(item) for item in stage_strategy["segment_partition_ranges"])
-    segment_strategies = tuple(dict(item) for item in stage_strategy["segment_strategies"])
-    if len(segment_ranges) != len(segment_strategies):
-        raise ValueError(
-            "segment_partition_ranges and segment_strategies must have the same length"
-        )
-    if not segment_ranges:
-        raise ValueError("segment_partition_ranges must not be empty")
-    start_offset = int(stage_range[0])
-    segments = []
-    for segment_range, segment_strategy in zip(segment_ranges, segment_strategies, strict=True):
-        if len(segment_range) != 2:
-            raise ValueError("segment_partition_ranges must contain [start, end] pairs")
-        if stage_device_type is not None and "device_type" not in segment_strategy:
-            segment_strategy["device_type"] = stage_device_type
-        segments.append(
-            SegmentPlan(
-                start=start_offset + int(segment_range[0]),
-                end=start_offset + int(segment_range[1]),
-                strategy=segment_strategy,
-            )
-        )
-    transitions = []
-    for source_index, (source_segment, target_segment) in enumerate(zip(segments, segments[1:])):
-        transitions.append(
-            TransitionPlan(
-                source_stage_id=stage_id,
-                target_stage_id=stage_id,
-                kind="segment-redistribution",
-                source_segment_index=source_index,
-                target_segment_index=source_index + 1,
-                metadata={
-                    "source_mesh": _segment_mesh_metadata(source_segment.strategy),
-                    "target_mesh": _segment_mesh_metadata(target_segment.strategy),
-                },
-            )
-        )
-    return tuple(segments), tuple(transitions)
-
-
-def _build_stage_runtime_bridge_segments(stage_range, stage_strategy, stage_device_type=None):
-    segment_strategy = dict(stage_strategy)
-    if stage_device_type is not None:
-        segment_strategy["device_type"] = stage_device_type
-    segment_strategy["stage_runtime_bridge"] = True
-    segments = (
-        SegmentPlan(
-            start=int(stage_range[0]),
-            end=int(stage_range[1]),
-            strategy=segment_strategy,
-        ),
-    )
-    return segments, ()
 
 
 def _stage_layer_counts(num_layers: int, strategy) -> tuple[int, ...]:
@@ -293,46 +216,6 @@ def _contiguous_stage_groups(world_size: int, pp_size: int) -> tuple[tuple[int, 
 
 def _has_explicit_stage_metadata(strategy) -> bool:
     return "stage_partition_ranges" in strategy and "stage_strategies" in strategy
-
-
-def _has_explicit_segment_metadata(stage_strategy) -> bool:
-    return "segment_partition_ranges" in stage_strategy and "segment_strategies" in stage_strategy
-
-
-def _segment_mesh_metadata(strategy) -> dict[str, object]:
-    return {
-        "tensor_model_parallel_size": _required_strategy_int(
-            strategy,
-            ("tensor_model_parallel_size", "tp"),
-        ),
-        "context_parallel_size": _required_strategy_int(strategy, ("context_parallel_size", "cp")),
-        "expert_model_parallel_size": _required_strategy_int(
-            strategy,
-            ("expert_model_parallel_size", "ep"),
-        ),
-        "data_parallel_size": _required_strategy_int(strategy, ("data_parallel_size", "dp")),
-        "pp_local": _segment_local_pipeline_size(strategy),
-    }
-
-
-def _segment_local_pipeline_size(strategy) -> int:
-    value = strategy.get("pp_local")
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    value = strategy.get("pipeline_model_parallel_size")
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return 1
-
-
-def _required_strategy_int(strategy, keys):
-    for key in keys:
-        value = strategy.get(key)
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, int):
-            return value
-    raise ValueError(f"missing required strategy field {keys[0]}")
 
 
 def _required_stage_world_size(strategy) -> int:

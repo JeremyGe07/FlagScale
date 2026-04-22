@@ -83,7 +83,6 @@ def _segment_strategy(*, tp, dp):
         "device_type": "nvidia_l20",
         "expert_model_parallel_size": 1,
         "pipeline_model_parallel_size": 1,
-        "pp_local": 1,
         "sequence_parallel": True,
         "tensor_model_parallel_size": tp,
         "use_distributed_optimizer": False,
@@ -146,6 +145,8 @@ def test_lower_strategy_to_plan_builds_segment_heterogeneous_plan_from_explicit_
         (0, 0),
         (1, 1),
     ]
+    assert plan.stages[0].segments[0].strategy["pp_local"] == 1
+    assert plan.stages[0].segments[1].strategy["pp_local"] == 1
     assert summary["transitions"][0]["metadata"]["source_mesh"]["tensor_model_parallel_size"] == 2
     assert summary["transitions"][1]["metadata"]["target_mesh"]["tensor_model_parallel_size"] == 2
 
