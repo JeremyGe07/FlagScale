@@ -200,6 +200,28 @@ def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_
     )
 
 
+def test_generator_uses_lowered_stage_device_types_for_segment_shell(tmp_path):
+    config = segment_runtime_config(tmp_path, with_num_layers=True)
+    config.train.system.hetero = {"hetero_current_device_type": "mlu290"}
+    stage_device_types = ["mlu290", "dcu_z100l"]
+    strategy = segment_runtime_strategy()
+    strategy["stage_device_types"] = stage_device_types
+    for stage_strategy in strategy["stage_strategies"]:
+        for segment_strategy in stage_strategy["segment_strategies"]:
+            segment_strategy.pop("device_type", None)
+
+    from flagscale.runner.auto_tuner.generate import Generator
+
+    task = Generator(config).gen(strategy)
+
+    assert task.train.system.hetero.enable_hetero is True
+    assert task.train.system.hetero.hetero_device_types == stage_device_types
+    assert task.train.system.hetero.segment_runtime["hetero_stage_segment_splits"] == [
+        [1, 1],
+        [1, 1],
+    ]
+
+
 def test_generator_replaces_existing_segment_runtime_subtree(tmp_path):
     config = segment_runtime_config(tmp_path, with_num_layers=True)
     config.train.system.hetero = {
