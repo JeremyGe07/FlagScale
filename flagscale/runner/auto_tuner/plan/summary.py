@@ -77,6 +77,8 @@ def summarize_segment_runtime_contract(plan: ModelPlan) -> dict[str, object]:
         for transition in plan.transitions
         if transition.kind == "segment-redistribution"
     ]
+    batch_unit = _segment_batch_unit(plan)
+    stage_map = {stage.stage_id: stage for stage in plan.stages}
     return {
         "hetero_stage_segment_splits": [
             [segment.end - segment.start + 1 for segment in stage.segments]
@@ -87,14 +89,7 @@ def summarize_segment_runtime_contract(plan: ModelPlan) -> dict[str, object]:
             for stage in plan.stages
         ],
         "hetero_stage_segment_transitions": [
-            {
-                "source_stage_id": transition.source_stage_id,
-                "target_stage_id": transition.target_stage_id,
-                "kind": transition.kind,
-                "source_segment_index": transition.source_segment_index,
-                "target_segment_index": transition.target_segment_index,
-                "metadata": to_json_safe(dict(transition.metadata)),
-            }
+            _segment_transition_record(transition, batch_unit, stage_map)
             for transition in segment_transitions
         ],
     }
@@ -153,6 +148,96 @@ def _segment_local_pipeline_size(strategy: Mapping[str, object]) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return 1
+
+
+def _segment_batch_unit(plan: ModelPlan) -> int:
+    contract = plan.contract
+    if contract is None or contract.global_batch_size is None:
+        raise ValueError("segment runtime contract requires global_batch_size")
+    if contract.gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be positive")
+    if contract.global_batch_size % contract.gradient_accumulation_steps != 0:
+        raise ValueError("global_batch_size must be divisible by gradient_accumulation_steps")
+    return contract.global_batch_size // contract.gradient_accumulation_steps
+
+
+def _segment_transition_record(transition, batch_unit: int, stage_map) -> dict[str, object]:
+    source_mesh = _stage_segment_transition_mesh(
+        stage_map,
+        transition.source_stage_id,
+        transition.source_segment_index,
+        "source",
+    )
+    target_mesh = _stage_segment_transition_mesh(
+        stage_map,
+        transition.target_stage_id,
+        transition.target_segment_index,
+        "target",
+    )
+    _validate_segment_runtime_mesh(source_mesh, "source_mesh")
+    _validate_segment_runtime_mesh(target_mesh, "target_mesh")
+    _validate_batch_unit(batch_unit, source_mesh, target_mesh)
+    return {
+        "source_stage_id": transition.source_stage_id,
+        "target_stage_id": transition.target_stage_id,
+        "kind": transition.kind,
+        "source_segment_index": transition.source_segment_index,
+        "target_segment_index": transition.target_segment_index,
+        "source_mesh": source_mesh,
+        "target_mesh": target_mesh,
+        "batch_unit": batch_unit,
+        "redistribution_kind": _redistribution_kind(source_mesh, target_mesh),
+        "requires_sequence_parallel": source_mesh["tp"] != target_mesh["tp"],
+    }
+
+
+def _stage_segment_transition_mesh(
+    stage_map,
+    stage_id: int | None,
+    segment_index: int | None,
+    label: str,
+) -> dict[str, int]:
+    if stage_id is None or segment_index is None:
+        raise ValueError(f"{label} segment transition must define stage and segment indexes")
+    stage = stage_map.get(stage_id)
+    if stage is None:
+        raise ValueError(f"{label} stage {stage_id} is missing from segment runtime plan")
+    if segment_index < 0 or segment_index >= len(stage.segments):
+        raise ValueError(f"{label} segment index {segment_index} is out of range")
+    strategy = stage.segments[segment_index].strategy
+    return {
+        "tp": _required_strategy_int(strategy, ("tensor_model_parallel_size", "tp")),
+        "cp": _required_strategy_int(strategy, ("context_parallel_size", "cp")),
+        "ep": _required_strategy_int(strategy, ("expert_model_parallel_size", "ep")),
+        "dp": _required_strategy_int(strategy, ("data_parallel_size", "dp")),
+        "pp": _segment_local_pipeline_size(strategy),
+    }
+
+
+def _redistribution_kind(source_mesh: Mapping[str, int], target_mesh: Mapping[str, int]) -> str:
+    tp_changed = source_mesh["tp"] != target_mesh["tp"]
+    dp_changed = source_mesh["dp"] != target_mesh["dp"]
+    if tp_changed and dp_changed:
+        return "tp-dp"
+    if tp_changed:
+        return "tp-only"
+    if dp_changed:
+        return "dp-only"
+    raise ValueError("redistribution_kind requires tp or dp changes across the boundary")
+
+
+def _validate_segment_runtime_mesh(mesh: Mapping[str, int], label: str) -> None:
+    if mesh["pp"] != 1:
+        raise ValueError(f"{label}.pp must be 1")
+
+
+def _validate_batch_unit(
+    batch_unit: int,
+    source_mesh: Mapping[str, int],
+    target_mesh: Mapping[str, int],
+) -> None:
+    if batch_unit % source_mesh["dp"] != 0 or batch_unit % target_mesh["dp"] != 0:
+        raise ValueError("batch_unit must be divisible by source and target dp")
 
 
 def _required_strategy_int(strategy: Mapping[str, object], keys: tuple[str, ...]) -> int:

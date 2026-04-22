@@ -8,6 +8,9 @@ from flagscale.runner.auto_tuner.plan.segment_lowering import (
     build_explicit_stage_segments,
     required_stage_world_size,
 )
+from flagscale.runner.auto_tuner.plan.segment_transition_metadata import (
+    enrich_segment_transition_metadata,
+)
 from flagscale.runner.auto_tuner.plan.summary import summarize_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
@@ -40,6 +43,7 @@ def lower_strategy_to_plan(strategy, config, validate=True) -> ModelPlan:
         contract=build_execution_contract(strategy, config),
         total_layers=num_layers,
     )
+    plan = enrich_segment_transition_metadata(plan)
     if validate:
         validate_model_plan(plan)
     return plan
@@ -156,7 +160,6 @@ def _build_explicit_stage_plan(num_layers: int, strategy, config):
         transitions.extend(stage_transitions)
     return tuple(stage_segments), device_groups, tuple(transitions)
 
-
 def _stage_layer_counts(num_layers: int, strategy) -> tuple[int, ...]:
     pp_size = strategy["pipeline_model_parallel_size"]
     if pp_size == 1:
@@ -219,6 +222,8 @@ def _contiguous_stage_groups(world_size: int, pp_size: int) -> tuple[tuple[int, 
 
 def _has_explicit_stage_metadata(strategy) -> bool:
     return "stage_partition_ranges" in strategy and "stage_strategies" in strategy
+
+
 def _uses_vpp(strategy) -> bool:
     chunk_layers = strategy.get("num_layers_per_virtual_pipeline_stage")
     return isinstance(chunk_layers, int) and chunk_layers > 0
