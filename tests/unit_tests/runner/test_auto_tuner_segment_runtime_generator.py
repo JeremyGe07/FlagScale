@@ -185,12 +185,19 @@ def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_
     assert task.experiment.auto_tuner.plan.plan_kind == "segment-heterogeneous"
     assert task.experiment.auto_tuner.plan.runtime_mode == "segment-executable"
     assert task.experiment.auto_tuner.plan.runtime_executable is False
+    assert task.train.system.hetero.enable_hetero is True
+    assert task.train.system.hetero.hetero_pipeline_layer_split == [2, 2]
+    assert task.train.system.hetero.hetero_process_meshes == [2, 1, 1, 1, 1, 1, 1, 1, 2, 1]
+    assert task.train.system.hetero.hetero_device_types == ["nvidia_l20", "nvidia_l20"]
     assert task.experiment.auto_tuner.plan.plan_summary["stages"][0]["segments"][0]["strategy"][
         "pp_local"
     ] == 1
     assert segment_runtime["hetero_stage_segment_splits"] == [[1, 1], [1, 1]]
     assert segment_runtime["hetero_stage_segment_meshes"][0][0] == [2, 1, 1, 1, 1]
-    assert segment_runtime["hetero_stage_segment_transitions"][0]["kind"] == "segment-redistribution"
+    assert (
+        segment_runtime["hetero_stage_segment_transitions"][0]["kind"]
+        == "segment-redistribution"
+    )
 
 
 def test_generator_replaces_existing_segment_runtime_subtree(tmp_path):

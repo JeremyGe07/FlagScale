@@ -14,6 +14,7 @@ from flagscale.runner.auto_tuner.plan.summary import (
     plan_kind,
     summarize_plan,
 )
+from flagscale.runner.auto_tuner.plan.runtime_bridge import apply_hetero_runtime_overrides
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
@@ -228,6 +229,22 @@ def test_lower_strategy_to_plan_rejects_inconsistent_nested_segment_world_size(t
 
     with pytest.raises(ValueError, match="world size"):
         lower_strategy_to_plan(strategy, config)
+
+
+def test_apply_hetero_runtime_overrides_materializes_stage_shell_and_segment_runtime(tmp_path):
+    config = _config(tmp_path)
+    strategy = _segment_runtime_strategy()
+
+    apply_hetero_runtime_overrides(strategy, config, "segment-executable")
+
+    assert config.train.system.hetero.enable_hetero is True
+    assert config.train.system.hetero.hetero_pipeline_layer_split == [2, 2]
+    assert config.train.system.hetero.hetero_process_meshes == [2, 1, 1, 1, 1, 1, 1, 1, 2, 1]
+    assert config.train.system.hetero.hetero_device_types == ["nvidia_l20", "nvidia_l20"]
+    assert config.train.system.hetero.segment_runtime["hetero_stage_segment_splits"] == [
+        [1, 1],
+        [1, 1],
+    ]
 
 
 @pytest.mark.parametrize(

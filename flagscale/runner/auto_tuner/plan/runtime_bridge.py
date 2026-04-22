@@ -19,7 +19,15 @@ def apply_hetero_runtime_overrides(strategy, config, runtime_mode):
         overrides = build_stage_hetero_runtime_overrides(strategy, config)
     elif runtime_mode == "segment-executable":
         _require_segment_runtime_metadata(strategy)
-        overrides = build_segment_hetero_runtime_overrides(strategy, config)
+        segment_overrides = build_segment_hetero_runtime_overrides(strategy, config)
+        if segment_overrides is None:
+            raise ValueError(
+                "segment runtime bridge did not materialize segment runtime overrides"
+            )
+        stage_overrides = build_stage_hetero_runtime_overrides(strategy, config)
+        if stage_overrides is None:
+            raise ValueError("segment runtime bridge did not materialize stage overrides")
+        overrides = OmegaConf.merge(stage_overrides, segment_overrides)
     else:
         raise ValueError(f"unsupported runtime_mode for hetero overrides: {runtime_mode}")
     if overrides is None:

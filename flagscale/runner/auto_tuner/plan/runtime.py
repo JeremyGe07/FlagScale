@@ -20,35 +20,15 @@ def build_stage_hetero_runtime_overrides(strategy, config):
     if "stage_partition_ranges" not in strategy or "stage_strategies" not in strategy:
         return None
     plan = lower_strategy_to_plan(strategy, config)
-    if plan_kind(plan) != STAGE_HETEROGENEOUS_PLAN:
+    if plan_kind(plan) not in {STAGE_HETEROGENEOUS_PLAN, SEGMENT_HETEROGENEOUS_PLAN}:
         return None
-    stage_strategies = [dict(stage.segments[0].strategy) for stage in plan.stages]
-    _validate_stage_runtime_support(stage_strategies)
-    device_types = _resolve_device_types(stage_strategies, config)
-    return {
-        "hetero": {
-            "enable_hetero": True,
-            "hetero_pipeline_layer_split": _layer_split(plan),
-            "hetero_process_meshes": _flatten_meshes(stage_strategies),
-            "hetero_device_types": device_types,
-            "hetero_current_device_type": _resolve_current_device_type(config, device_types),
-        },
-        "system": {
-            "pipeline_model_parallel_size": len(plan.stages),
-            "tensor_model_parallel_size": _required_int(
-                stage_strategies[0],
-                "tensor_model_parallel_size",
-            ),
-            "context_parallel_size": _required_int(stage_strategies[0], "context_parallel_size"),
-            "expert_model_parallel_size": _required_int(
-                stage_strategies[0],
-                "expert_model_parallel_size",
-            ),
-            "sequence_parallel": any(
-                item.get("sequence_parallel") is True for item in stage_strategies
-            ),
-        },
-    }
+    if plan_kind(plan) == STAGE_HETEROGENEOUS_PLAN:
+        stage_strategies = [dict(stage.segments[0].strategy) for stage in plan.stages]
+        layer_split = _layer_split(plan)
+    else:
+        stage_strategies = _segment_stage_strategies(strategy)
+        layer_split = _stage_layer_split(strategy)
+    return _build_stage_shell_overrides(stage_strategies, layer_split, config)
 
 
 def build_segment_hetero_runtime_overrides(strategy, config):
@@ -97,6 +77,46 @@ def _resolve_current_device_type(config, device_types):
 
 def _layer_split(plan):
     return [stage.segments[0].end - stage.segments[0].start + 1 for stage in plan.stages]
+
+
+def _stage_layer_split(strategy):
+    return [end - start + 1 for start, end in strategy["stage_partition_ranges"]]
+
+
+def _segment_stage_strategies(strategy):
+    return [
+        dict(stage_strategy["segment_strategies"][0])
+        for stage_strategy in strategy["stage_strategies"]
+    ]
+
+
+def _build_stage_shell_overrides(stage_strategies, layer_split, config):
+    _validate_stage_runtime_support(stage_strategies)
+    device_types = _resolve_device_types(stage_strategies, config)
+    return {
+        "hetero": {
+            "enable_hetero": True,
+            "hetero_pipeline_layer_split": layer_split,
+            "hetero_process_meshes": _flatten_meshes(stage_strategies),
+            "hetero_device_types": device_types,
+            "hetero_current_device_type": _resolve_current_device_type(config, device_types),
+        },
+        "system": {
+            "pipeline_model_parallel_size": len(stage_strategies),
+            "tensor_model_parallel_size": _required_int(
+                stage_strategies[0],
+                "tensor_model_parallel_size",
+            ),
+            "context_parallel_size": _required_int(stage_strategies[0], "context_parallel_size"),
+            "expert_model_parallel_size": _required_int(
+                stage_strategies[0],
+                "expert_model_parallel_size",
+            ),
+            "sequence_parallel": any(
+                item.get("sequence_parallel") is True for item in stage_strategies
+            ),
+        },
+    }
 
 
 def _flatten_meshes(stage_strategies):
