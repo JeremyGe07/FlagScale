@@ -1,3 +1,6 @@
+import pytest
+
+from flagscale.runner.auto_tuner.generate import Generator
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.runtime import build_segment_hetero_runtime_overrides
 from flagscale.runner.auto_tuner.plan.schema import (
@@ -106,8 +109,6 @@ def test_build_segment_runtime_contract_keeps_only_segment_redistribution_transi
 
 def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_path):
     config = segment_runtime_config(tmp_path, with_num_layers=True)
-
-    from flagscale.runner.auto_tuner.generate import Generator
 
     task = Generator(config).gen(
         {
@@ -220,6 +221,18 @@ def test_generator_uses_lowered_stage_device_types_for_segment_shell(tmp_path):
         [1, 1],
         [1, 1],
     ]
+
+
+def test_generator_rejects_segment_runtime_with_cross_stage_udo_mismatch(tmp_path):
+    config = segment_runtime_config(tmp_path, with_num_layers=True)
+    strategy = segment_runtime_strategy()
+    for segment_strategy in strategy["stage_strategies"][0]["segment_strategies"]:
+        segment_strategy["use_distributed_optimizer"] = True
+    for segment_strategy in strategy["stage_strategies"][1]["segment_strategies"]:
+        segment_strategy["use_distributed_optimizer"] = False
+
+    with pytest.raises(ValueError, match="use_distributed_optimizer"):
+        Generator(config).gen(strategy)
 
 
 def test_generator_replaces_existing_segment_runtime_subtree(tmp_path):

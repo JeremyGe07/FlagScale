@@ -79,7 +79,7 @@ def _layer_split(plan):
 
 
 def _build_stage_shell_overrides(stage_strategies, layer_split, config):
-    _validate_stage_runtime_support(stage_strategies)
+    _validate_stage_shell_support(stage_strategies)
     device_types = _resolve_device_types(stage_strategies, config)
     return {
         "hetero": {
@@ -107,6 +107,23 @@ def _build_stage_shell_overrides(stage_strategies, layer_split, config):
     }
 
 
+def _validate_stage_shell_support(stage_strategies):
+    _validate_stage_runtime_support(stage_strategies)
+    if _has_inconsistent_field(stage_strategies, "use_distributed_optimizer"):
+        raise ValueError("use_distributed_optimizer must be consistent across stages")
+    if _has_inconsistent_field(stage_strategies, "context_parallel_size"):
+        raise ValueError("context_parallel_size must be consistent across stages")
+    tp_values = {
+        _required_int(strategy, "tensor_model_parallel_size") for strategy in stage_strategies
+    }
+    if len(tp_values) > 1 and not all(
+        strategy.get("sequence_parallel") is True for strategy in stage_strategies
+    ):
+        raise ValueError(
+            "sequence_parallel must be enabled when tensor parallelism differs across stages"
+        )
+
+
 def _flatten_meshes(stage_strategies):
     values = []
     for strategy in stage_strategies:
@@ -124,6 +141,11 @@ def _flatten_meshes(stage_strategies):
 
 def _recompute_signature(strategy):
     return tuple(strategy.get(key) for key in RECOMPUTE_KEYS)
+
+
+def _has_inconsistent_field(stage_strategies, field):
+    values = {strategy.get(field) for strategy in stage_strategies}
+    return len(values) > 1
 
 
 def _required_int(strategy, key):
