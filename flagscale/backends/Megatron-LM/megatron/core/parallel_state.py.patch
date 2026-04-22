@@ -92,8 +92,43 @@ index 86c5bbbe4..5f63619c1 100644
      if (
          _TENSOR_MODEL_PARALLEL_GROUP is None
          or _PIPELINE_MODEL_PARALLEL_GROUP is None
-@@ -1267,6 +1294,9 @@ def model_parallel_is_initialized():
+@@ -1267,6 +1294,39 @@ def model_parallel_is_initialized():
  
+def has_segment_runtime():
+    """Return whether a segment runtime contract is available."""
+    para_ctx = get_parallel_context()
+    return para_ctx is not None and para_ctx.has_segment_runtime()
+
+
+def get_segment_runtime_spec():
+    """Return the parsed segment runtime contract."""
+    para_ctx = get_parallel_context()
+    if para_ctx is None:
+        raise RuntimeError("parallel context is not initialized")
+    return para_ctx.get_segment_runtime_spec()
+
+
+def get_segment_mesh(stage_id, segment_index):
+    """Return the segment-local mesh for the given stage and segment."""
+    para_ctx = get_parallel_context()
+    if para_ctx is None:
+        raise RuntimeError("parallel context is not initialized")
+    return para_ctx.get_segment_mesh(stage_id, segment_index)
+
+
+def get_segment_process_group_ranks(stage_id, segment_index, token, is_expert=False):
+    """Return the caller-owned segment-local group ranks for one token."""
+    para_ctx = get_parallel_context()
+    if para_ctx is None:
+        raise RuntimeError("parallel context is not initialized")
+    return para_ctx.get_segment_process_group_ranks(stage_id, segment_index, token, is_expert)
+
+
+def get_segment_process_group_world_size(stage_id, segment_index, token, is_expert=False):
+    """Return the caller-owned segment-local world size for one token."""
+    return len(get_segment_process_group_ranks(stage_id, segment_index, token, is_expert))
+
+
  def get_model_parallel_group(check_initialized=True):
      """Get the model-parallel group the caller rank belongs to."""
 +    para_ctx = get_parallel_context() 

@@ -111,6 +111,134 @@ def find_overlapped_mapping(dim1, dim2, global_size=None):
     return overlapped_mapping
 
 
+_SEGMENT_LOOKUP_SPECS = (
+    ("tp", False),
+    ("dp", False),
+    ("dp-cp", False),
+    ("cp", False),
+    ("tp-dp", False),
+    ("tp-cp", False),
+    ("tp-dp-cp", False),
+    ("pp", False),
+    ("tp-pp", False),
+    ("ep", True),
+    ("tp", True),
+    ("tp-ep", True),
+    ("dp", True),
+    ("tp-ep-pp", True),
+)
+
+
+def _get_segment_stage_ranks(process_mesh):
+    if process_mesh.get_parallel_size("pp") != 1:
+        raise ValueError("segment runtime requires stage-level pipeline size 1")
+    required = ("_offset", "_world_size", "_rank_mapper")
+    if not all(hasattr(process_mesh, name) for name in required):
+        raise ValueError("segment runtime requires process mesh rank mapping state")
+    logical_ranks = list(range(process_mesh._offset, process_mesh._offset + process_mesh._world_size))
+    return tuple(process_mesh._rank_mapper.to_physical_ranks(logical_ranks))
+
+
+def _get_segment_lookup_order(process_mesh, use_tp_pp_dp_mapping):
+    return getattr(
+        process_mesh,
+        "_order",
+        "tp-pp-dp" if use_tp_pp_dp_mapping else "tp-cp-ep-dp-pp",
+    )
+
+
+def _prefix_product(values, init=1):
+    products = [init]
+    for value in values:
+        init *= value
+        products.append(init)
+    return products
+
+
+def _inner_product(lhs, rhs):
+    return sum(x * y for x, y in zip(lhs, rhs))
+
+
+def _decompose_index(index, shape, stride=None):
+    if stride is None:
+        stride = _prefix_product(shape)
+    coords = [(index // unit) % size for size, unit in zip(shape, stride)]
+    expected = _inner_product(coords, stride[:-1])
+    if expected != index:
+        raise ValueError(f"index {index} is incompatible with shape {shape}")
+    return coords
+
+
+def _expand_segment_order(order, size_by_axis):
+    axes = order.split("-")
+    for axis, size in size_by_axis.items():
+        if axis in axes:
+            continue
+        if size != 1:
+            raise RuntimeError(f"segment runtime order {order} is missing non-unit axis {axis}")
+        axes.append(axis)
+    return axes
+
+
+def _generate_segment_group_indices(size_by_axis, order, token):
+    axes = _expand_segment_order(order, size_by_axis)
+    parallel_size = [size_by_axis[axis] for axis in axes]
+    mask = [axis in token.split("-") for axis in axes]
+    masked_shape = [size for size, enabled in zip(parallel_size, mask) if enabled]
+    unmasked_shape = [size for size, enabled in zip(parallel_size, mask) if not enabled]
+    global_stride = _prefix_product(parallel_size)
+    masked_stride = [unit for unit, enabled in zip(global_stride, mask) if enabled]
+    unmasked_stride = [unit for unit, enabled in zip(global_stride, mask) if not enabled]
+    group_size = _prefix_product(masked_shape)[-1]
+    world_size = _prefix_product(parallel_size)[-1]
+    num_groups = world_size // group_size
+    groups = []
+    for group_index in range(num_groups):
+        group_coords = _decompose_index(group_index, unmasked_shape)
+        group = []
+        for rank_index in range(group_size):
+            rank_coords = _decompose_index(rank_index, masked_shape)
+            group.append(
+                _inner_product(rank_coords, masked_stride)
+                + _inner_product(group_coords, unmasked_stride)
+            )
+        groups.append(tuple(group))
+    return tuple(groups)
+
+
+def _build_segment_group_ranks(stage_ranks, mesh_spec, order):
+    size_by_axis = {
+        "tp": mesh_spec.tensor_model_parallel_size,
+        "ep": mesh_spec.expert_model_parallel_size,
+        "dp": mesh_spec.data_parallel_size,
+        "pp": mesh_spec.pp_local,
+        "cp": mesh_spec.context_parallel_size,
+    }
+    expected_world_size = (
+        mesh_spec.tensor_model_parallel_size
+        * mesh_spec.context_parallel_size
+        * mesh_spec.expert_model_parallel_size
+        * mesh_spec.data_parallel_size
+        * mesh_spec.pp_local
+    )
+    if len(stage_ranks) != expected_world_size:
+        raise ValueError("segment runtime mesh size must match the stage device-group size")
+    return {
+        (token, is_expert): tuple(
+            tuple(stage_ranks[index] for index in group)
+            for group in _generate_segment_group_indices(size_by_axis, order, token)
+        )
+        for token, is_expert in _SEGMENT_LOOKUP_SPECS
+    }
+
+
+def _find_rank_owned_group(group_ranks, rank):
+    for ranks in group_ranks:
+        if rank in ranks:
+            return ranks
+    return None
+
+
 class RankMapper:
     def __init__(self, args):
         assert (
@@ -569,6 +697,10 @@ class ParallelContext:
         self._global_process_group_to_ranks = {}
         self._global_parallel_world_sizes = {}
         self._global_parallel_ranks = {}
+        self._segment_runtime_spec = None
+        self._segment_mesh_lookup = {}
+        self._segment_process_group_ranks = {}
+        self._segment_all_process_group_ranks = {}
         self._timeout = timedelta(minutes=self._args.distributed_timeout_minutes)
 
         self._rank = torch.distributed.get_rank()
@@ -576,6 +708,7 @@ class ParallelContext:
         self.build_all_process_meshes()
         self.build_all_inter_mesh_process_groups()
         self.build_global_process_groups()
+        self._build_segment_runtime_lookups()
         from megatron.core.utils import GlobalMemoryBuffer
         self._global_memory_buffer = GlobalMemoryBuffer()
 
@@ -591,6 +724,95 @@ class ParallelContext:
 
     def is_initialized(self):
         return self._is_initialized
+
+    def _build_segment_runtime_lookups(self):
+        self._segment_runtime_spec = getattr(self._args, "segment_runtime_spec", None)
+        self._segment_mesh_lookup = {}
+        self._segment_process_group_ranks = {}
+        self._segment_all_process_group_ranks = {}
+        if self._segment_runtime_spec is None:
+            return
+        if len(self._segment_runtime_spec.stages) != len(self._process_meshes):
+            raise ValueError("segment runtime stage count must match hetero process meshes")
+        use_tp_pp_dp_mapping = getattr(self._args, "use_tp_pp_dp_mapping", False)
+        for stage_id, stage_spec in enumerate(self._segment_runtime_spec.stages):
+            process_mesh = self._process_meshes[stage_id]
+            stage_ranks = _get_segment_stage_ranks(process_mesh)
+            order = _get_segment_lookup_order(process_mesh, use_tp_pp_dp_mapping)
+            for segment_index, mesh in enumerate(stage_spec.segment_meshes):
+                key = (stage_id, segment_index)
+                self._segment_mesh_lookup[key] = mesh
+                all_group_ranks = _build_segment_group_ranks(stage_ranks, mesh, order)
+                for (token, is_expert), group_ranks in all_group_ranks.items():
+                    group_key = key + (token, is_expert)
+                    self._segment_all_process_group_ranks[group_key] = group_ranks
+                    self._segment_process_group_ranks[group_key] = _find_rank_owned_group(
+                        group_ranks, self._rank
+                    )
+
+    def _ensure_segment_runtime(self):
+        if self._segment_runtime_spec is None:
+            raise RuntimeError("segment runtime is not configured")
+
+    def has_segment_runtime(self):
+        return self._segment_runtime_spec is not None
+
+    def get_segment_runtime_spec(self):
+        return self._segment_runtime_spec
+
+    def get_segment_mesh(self, stage_id, segment_index):
+        self._ensure_segment_runtime()
+        mesh = self._segment_mesh_lookup.get((stage_id, segment_index))
+        if mesh is None:
+            raise ValueError(f"segment runtime mesh is not initialized for stage {stage_id} segment {segment_index}")
+        return mesh
+
+    def get_segment_process_group_ranks(
+        self,
+        stage_id,
+        segment_index,
+        token,
+        is_expert=False,
+        check_initialized=True,
+    ):
+        self._ensure_segment_runtime()
+        ranks = self._segment_process_group_ranks.get((stage_id, segment_index, token, is_expert))
+        if check_initialized:
+            assert ranks is not None, f"segment runtime group {token} is not initialized"
+        return ranks
+
+    def get_segment_all_process_group_ranks(
+        self,
+        stage_id,
+        segment_index,
+        token,
+        is_expert=False,
+        check_initialized=True,
+    ):
+        self._ensure_segment_runtime()
+        ranks = self._segment_all_process_group_ranks.get(
+            (stage_id, segment_index, token, is_expert)
+        )
+        if check_initialized:
+            assert ranks is not None, f"segment runtime group {token} is not initialized"
+        return ranks
+
+    def get_segment_process_group_world_size(
+        self,
+        stage_id,
+        segment_index,
+        token,
+        is_expert=False,
+    ):
+        return len(self.get_segment_process_group_ranks(stage_id, segment_index, token, is_expert))
+
+    def get_segment_process_group_rank(self, stage_id, segment_index, token, is_expert=False):
+        return self.get_segment_process_group_ranks(
+            stage_id,
+            segment_index,
+            token,
+            is_expert,
+        ).index(self._rank)
 
     def build_all_process_meshes(self):
         rank = torch.distributed.get_rank()
