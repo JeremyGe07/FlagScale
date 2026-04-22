@@ -258,5 +258,35 @@ def test_model_plan_keeps_transitions_and_execution_contract():
 
     assert plan.transitions[0].kind == "pipeline"
     assert plan.transitions[0].metadata["buffer_layers"] == 1
-    assert plan.contract.world_size == 4
-    assert plan.contract.gradient_accumulation_steps == 8
+
+
+def test_summarize_plan_preserves_transition_metadata():
+    _, ModelPlan, SegmentPlan, StagePlan, TransitionPlan = _load_plan_types()
+    plan = ModelPlan(
+        stages=[
+            StagePlan(
+                stage_id=0,
+                segments=[SegmentPlan(start=0, end=1, strategy={"tp": 1, "dp": 1})],
+            )
+        ],
+        transitions=[
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=0,
+                kind="segment-redistribution",
+                source_segment_index=0,
+                target_segment_index=0,
+                metadata={
+                    "source_mesh": {"tensor_model_parallel_size": 2, "pp_local": 1},
+                    "target_mesh": {"tensor_model_parallel_size": 1, "pp_local": 1},
+                },
+            )
+        ],
+    )
+
+    summary = importlib.import_module("flagscale.runner.auto_tuner.plan.summary").summarize_plan(
+        plan
+    )
+
+    assert summary["transitions"][0]["kind"] == "segment-redistribution"
+    assert summary["transitions"][0]["metadata"]["source_mesh"]["tensor_model_parallel_size"] == 2

@@ -71,6 +71,30 @@ def summarize_execution_contract(plan: ModelPlan) -> dict[str, object]:
     }
 
 
+def summarize_segment_runtime_contract(plan: ModelPlan) -> dict[str, object]:
+    return {
+        "hetero_stage_segment_splits": [
+            [segment.end - segment.start + 1 for segment in stage.segments]
+            for stage in plan.stages
+        ],
+        "hetero_stage_segment_meshes": [
+            [_segment_mesh_record(segment.strategy) for segment in stage.segments]
+            for stage in plan.stages
+        ],
+        "hetero_stage_segment_transitions": [
+            {
+                "source_stage_id": transition.source_stage_id,
+                "target_stage_id": transition.target_stage_id,
+                "kind": transition.kind,
+                "source_segment_index": transition.source_segment_index,
+                "target_segment_index": transition.target_segment_index,
+                "metadata": to_json_safe(dict(transition.metadata)),
+            }
+            for transition in plan.transitions
+        ],
+    }
+
+
 def segment_count(plan: ModelPlan) -> int:
     return sum(len(stage.segments) for stage in plan.stages)
 
@@ -106,12 +130,43 @@ def extract_homogeneous_strategy(plan: ModelPlan) -> dict[str, object] | None:
     return strategy
 
 
+def _segment_mesh_record(strategy: Mapping[str, object]) -> list[int]:
+    return [
+        _required_strategy_int(strategy, ("tensor_model_parallel_size", "tp")),
+        _required_strategy_int(strategy, ("context_parallel_size", "cp")),
+        _required_strategy_int(strategy, ("expert_model_parallel_size", "ep")),
+        _required_strategy_int(strategy, ("data_parallel_size", "dp")),
+        _segment_local_pipeline_size(strategy),
+    ]
+
+
+def _segment_local_pipeline_size(strategy: Mapping[str, object]) -> int:
+    value = strategy.get("pp_local")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    value = strategy.get("pipeline_model_parallel_size")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return 1
+
+
+def _required_strategy_int(strategy: Mapping[str, object], keys: tuple[str, ...]) -> int:
+    for key in keys:
+        value = strategy.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+    raise ValueError(f"missing required strategy field {keys[0]}")
+
+
 __all__ = [
     "extract_homogeneous_strategy",
     "is_runtime_executable_plan",
     "plan_kind",
     "segment_count",
     "summarize_execution_contract",
+    "summarize_segment_runtime_contract",
     "summarize_plan",
     "to_json_safe",
 ]

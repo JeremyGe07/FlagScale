@@ -1,5 +1,11 @@
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
-from flagscale.runner.auto_tuner.plan.summary import STAGE_HETEROGENEOUS_PLAN, plan_kind
+from flagscale.runner.auto_tuner.plan.segment_runtime_contract import build_segment_runtime_contract
+from flagscale.runner.auto_tuner.plan.summary import (
+    SEGMENT_HETEROGENEOUS_PLAN,
+    STAGE_HETEROGENEOUS_PLAN,
+    plan_kind,
+)
+from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 MESH_PP_SIZE = 1
 RECOMPUTE_KEYS = (
@@ -29,12 +35,30 @@ def build_stage_hetero_runtime_overrides(strategy, config):
         },
         "system": {
             "pipeline_model_parallel_size": len(plan.stages),
-            "tensor_model_parallel_size": _required_int(stage_strategies[0], "tensor_model_parallel_size"),
+            "tensor_model_parallel_size": _required_int(
+                stage_strategies[0],
+                "tensor_model_parallel_size",
+            ),
             "context_parallel_size": _required_int(stage_strategies[0], "context_parallel_size"),
-            "expert_model_parallel_size": _required_int(stage_strategies[0], "expert_model_parallel_size"),
-            "sequence_parallel": any(item.get("sequence_parallel") is True for item in stage_strategies),
+            "expert_model_parallel_size": _required_int(
+                stage_strategies[0],
+                "expert_model_parallel_size",
+            ),
+            "sequence_parallel": any(
+                item.get("sequence_parallel") is True for item in stage_strategies
+            ),
         },
     }
+
+
+def build_segment_hetero_runtime_overrides(strategy, config):
+    if "stage_partition_ranges" not in strategy or "stage_strategies" not in strategy:
+        return None
+    plan = lower_strategy_to_plan(strategy, config)
+    if plan_kind(plan) != SEGMENT_HETEROGENEOUS_PLAN:
+        return None
+    validate_model_plan(plan)
+    return {"hetero": {"segment_runtime": build_segment_runtime_contract(plan)}}
 
 
 def _validate_stage_runtime_support(stage_strategies):
@@ -54,7 +78,9 @@ def _resolve_device_types(stage_strategies, config):
         return list(configured)
     profile = config.experiment.auto_tuner.get("chip_profile", {}).get("profile")
     if profile is None:
-        raise ValueError("stage-heterogeneous runtime lowering requires hetero_device_types or chip profile")
+        raise ValueError(
+            "stage-heterogeneous runtime lowering requires hetero_device_types or chip profile"
+        )
     device_type = profile["identity"]["name"]
     return [device_type] * len(stage_strategies)
 
@@ -99,4 +125,4 @@ def _required_int(strategy, key):
     return value
 
 
-__all__ = ["build_stage_hetero_runtime_overrides"]
+__all__ = ["build_stage_hetero_runtime_overrides", "build_segment_hetero_runtime_overrides"]
