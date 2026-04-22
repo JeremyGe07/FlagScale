@@ -32,6 +32,8 @@ def apply_hetero_runtime_overrides(strategy, config, runtime_mode):
         config.train.system.get("hetero", {}),
         overrides["hetero"],
     )
+    if "segment_runtime" in overrides["hetero"]:
+        config.train.system.hetero.segment_runtime = overrides["hetero"]["segment_runtime"]
     if "system" in overrides:
         config.train.system = OmegaConf.merge(config.train.system, overrides["system"])
 

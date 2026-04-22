@@ -408,6 +408,130 @@ def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_
     assert segment_runtime["hetero_stage_segment_transitions"][0]["kind"] == "segment-redistribution"
 
 
+def test_generator_replaces_existing_segment_runtime_subtree(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {"nnodes": 1, "nproc_per_node": 4},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                    "hetero": {
+                        "legacy_hetero_key": True,
+                        "segment_runtime": {
+                            "legacy_key": "stale-value",
+                        },
+                    },
+                },
+                "model": {
+                    "num_layers": 4,
+                    "global_batch_size": 8,
+                    "hidden_size": 8,
+                    "num_attention_heads": 4,
+                    "seq_length": 16,
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    task = Generator(config).gen_best_task(
+        {
+            "idx": 1,
+            "data_parallel_size": 1,
+            "use_distributed_optimizer": False,
+            "tensor_model_parallel_size": 1,
+            "sequence_parallel": True,
+            "pipeline_model_parallel_size": 2,
+            "num_layers_per_virtual_pipeline_stage": None,
+            "recompute_method": None,
+            "recompute_granularity": None,
+            "recompute_num_layers": None,
+            "micro_batch_size": 2,
+            "acc_step": 4,
+            "context_parallel_size": 1,
+            "expert_model_parallel_size": 1,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
+            "stage_partition_ranges": [[0, 1], [2, 3]],
+            "stage_device_groups": [[0, 1], [2, 3]],
+            "stage_strategies": [
+                {
+                    "segment_partition_ranges": [[0, 0], [1, 1]],
+                    "segment_strategies": [
+                        {
+                            "data_parallel_size": 1,
+                            "tensor_model_parallel_size": 2,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                        {
+                            "data_parallel_size": 2,
+                            "tensor_model_parallel_size": 1,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                    ],
+                },
+                {
+                    "segment_partition_ranges": [[0, 0], [1, 1]],
+                    "segment_strategies": [
+                        {
+                            "data_parallel_size": 2,
+                            "tensor_model_parallel_size": 1,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                        {
+                            "data_parallel_size": 1,
+                            "tensor_model_parallel_size": 2,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                    ],
+                },
+            ],
+        },
+        config,
+    )
+
+    segment_runtime = task.train.system.hetero.segment_runtime
+
+    assert task.train.system.hetero.legacy_hetero_key is True
+    assert "legacy_key" not in segment_runtime
+    assert sorted(segment_runtime.keys()) == sorted(
+        [
+            "hetero_stage_segment_splits",
+            "hetero_stage_segment_meshes",
+            "hetero_stage_segment_transitions",
+        ]
+    )
+
+
 def test_generator_rejects_prefilled_segment_metadata_without_raw_stage_metadata(tmp_path):
     config = OmegaConf.create(
         {
