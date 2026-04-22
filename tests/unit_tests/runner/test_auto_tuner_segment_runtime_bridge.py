@@ -1,6 +1,17 @@
+import pytest
+
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
+from flagscale.runner.auto_tuner.plan.schema import (
+    ModelPlan,
+    SegmentPlan,
+    StagePlan,
+    TransitionPlan,
+)
+from flagscale.runner.auto_tuner.plan.segment_runtime_contract import (
+    build_segment_runtime_contract,
+)
 from flagscale.runner.auto_tuner.plan.runtime import build_segment_hetero_runtime_overrides
 from flagscale.runner.auto_tuner.plan.summary import (
     SEGMENT_HETEROGENEOUS_PLAN,
@@ -130,6 +141,12 @@ def _segment_runtime_strategy():
     }
 
 
+def _segment_runtime_strategy_without_stage_device_groups():
+    strategy = _segment_runtime_strategy()
+    strategy.pop("stage_device_groups")
+    return strategy
+
+
 def test_lower_strategy_to_plan_builds_segment_heterogeneous_plan_from_explicit_stage_metadata(
     tmp_path,
 ):
@@ -168,3 +185,92 @@ def test_build_segment_runtime_overrides_materializes_exact_contract(tmp_path):
         "hetero_stage_segment_transitions",
     }
     assert len(runtime["hetero_stage_segment_transitions"]) == len(plan.transitions)
+
+
+def test_lower_strategy_to_plan_defaults_stage_device_groups_from_nested_segment_metadata(
+    tmp_path,
+):
+    config = _config(tmp_path)
+    plan = lower_strategy_to_plan(_segment_runtime_strategy_without_stage_device_groups(), config)
+
+    assert plan.stages[0].device_group == (0, 1)
+    assert plan.stages[1].device_group == (2, 3)
+
+
+def test_lower_strategy_to_plan_rejects_inconsistent_nested_segment_world_size(tmp_path):
+    config = _config(tmp_path)
+    strategy = _segment_runtime_strategy_without_stage_device_groups()
+    strategy["stage_strategies"][1]["segment_strategies"][0]["data_parallel_size"] = 4
+
+    with pytest.raises(ValueError, match="world size"):
+        lower_strategy_to_plan(strategy, config)
+
+
+def test_build_segment_runtime_contract_keeps_only_segment_redistribution_transitions():
+    plan = ModelPlan(
+        stages=(
+            StagePlan(
+                stage_id=0,
+                segments=(
+                    SegmentPlan(
+                        start=0,
+                        end=0,
+                        strategy={
+                            "data_parallel_size": 1,
+                            "tensor_model_parallel_size": 2,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "pp_local": 1,
+                        },
+                    ),
+                    SegmentPlan(
+                        start=1,
+                        end=1,
+                        strategy={
+                            "data_parallel_size": 2,
+                            "tensor_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "pp_local": 1,
+                        },
+                    ),
+                ),
+            ),
+        ),
+        transitions=(
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=0,
+                kind="segment-redistribution",
+                source_segment_index=0,
+                target_segment_index=1,
+                metadata={
+                    "source_mesh": {
+                        "tensor_model_parallel_size": 2,
+                        "context_parallel_size": 1,
+                        "expert_model_parallel_size": 1,
+                        "data_parallel_size": 1,
+                        "pp_local": 1,
+                    },
+                    "target_mesh": {
+                        "tensor_model_parallel_size": 1,
+                        "context_parallel_size": 1,
+                        "expert_model_parallel_size": 1,
+                        "data_parallel_size": 2,
+                        "pp_local": 1,
+                    },
+                },
+            ),
+            TransitionPlan(
+                source_stage_id=0,
+                target_stage_id=1,
+                kind="pipeline",
+                metadata={"buffer_layers": 1},
+            ),
+        ),
+    )
+
+    contract = build_segment_runtime_contract(plan)
+
+    assert len(contract["hetero_stage_segment_transitions"]) == 1
+    assert contract["hetero_stage_segment_transitions"][0]["kind"] == "segment-redistribution"

@@ -4,7 +4,10 @@ from flagscale.runner.auto_tuner.plan.schema import (
     SegmentPlan,
     StagePlan,
 )
-from flagscale.runner.auto_tuner.plan.segment_lowering import build_explicit_stage_segments
+from flagscale.runner.auto_tuner.plan.segment_lowering import (
+    build_explicit_stage_segments,
+    required_stage_world_size,
+)
 from flagscale.runner.auto_tuner.plan.summary import summarize_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
@@ -193,7 +196,7 @@ def _default_edge_layer_counts(num_layers: int, pp_size: int) -> tuple[int, int]
 
 def _contiguous_stage_groups_for_stage_strategies(stage_strategies, config):
     world_size = _resolve_world_size(config)
-    counts = tuple(_required_stage_world_size(strategy) for strategy in stage_strategies)
+    counts = tuple(required_stage_world_size(strategy) for strategy in stage_strategies)
     if sum(counts) != world_size:
         raise ValueError("stage strategy world sizes must sum to contract world_size")
     offset = 0
@@ -216,16 +219,6 @@ def _contiguous_stage_groups(world_size: int, pp_size: int) -> tuple[tuple[int, 
 
 def _has_explicit_stage_metadata(strategy) -> bool:
     return "stage_partition_ranges" in strategy and "stage_strategies" in strategy
-
-
-def _required_stage_world_size(strategy) -> int:
-    return (
-        int(strategy["data_parallel_size"])
-        * int(strategy["tensor_model_parallel_size"])
-        * int(strategy["context_parallel_size"])
-    )
-
-
 def _uses_vpp(strategy) -> bool:
     chunk_layers = strategy.get("num_layers_per_virtual_pipeline_stage")
     return isinstance(chunk_layers, int) and chunk_layers > 0

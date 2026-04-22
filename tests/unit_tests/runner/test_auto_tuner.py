@@ -408,6 +408,78 @@ def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_
     assert segment_runtime["hetero_stage_segment_transitions"][0]["kind"] == "segment-redistribution"
 
 
+def test_generator_rejects_prefilled_segment_metadata_without_raw_stage_metadata(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "runner": {"nnodes": 1, "nproc_per_node": 4},
+                "auto_tuner": {
+                    "control": {"train_iters": 3},
+                },
+            },
+            "train": {
+                "system": {
+                    "logging": {},
+                    "checkpoint": {"save_interval": 100},
+                },
+                "model": {
+                    "num_layers": 4,
+                    "global_batch_size": 8,
+                    "hidden_size": 8,
+                    "num_attention_heads": 4,
+                    "seq_length": 16,
+                    "eval_iters": 10,
+                    "optimizer": {
+                        "lr_scheduler": {
+                            "lr": 1e-5,
+                            "min_lr": 0,
+                        }
+                    },
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="segment runtime bridge requires"):
+        Generator(config).gen(
+            {
+                "idx": 1,
+                "data_parallel_size": 1,
+                "use_distributed_optimizer": False,
+                "tensor_model_parallel_size": 1,
+                "sequence_parallel": True,
+                "pipeline_model_parallel_size": 2,
+                "num_layers_per_virtual_pipeline_stage": None,
+                "recompute_method": None,
+                "recompute_granularity": None,
+                "recompute_num_layers": None,
+                "micro_batch_size": 2,
+                "acc_step": 4,
+                "context_parallel_size": 1,
+                "expert_model_parallel_size": 1,
+                "decoder_first_pipeline_num_layers": None,
+                "decoder_last_pipeline_num_layers": None,
+                "plan_kind": "segment-heterogeneous",
+                "stage_count": 2,
+                "segment_count": 4,
+                "runtime_mode": "segment-executable",
+                "runtime_executable": False,
+                "execution_contract": {
+                    "world_size": 2,
+                    "micro_batch_size": 2,
+                    "gradient_accumulation_steps": 4,
+                    "global_batch_size": 8,
+                },
+                "plan_summary": {
+                    "stage_count": 2,
+                    "vpp_stage_segment_counts": [2, 2],
+                    "contract": {"global_batch_size": 8},
+                },
+            }
+        )
+
+
 def test_generator_rejects_incomplete_prefilled_plan_metadata(tmp_path):
     config = OmegaConf.create(
         {

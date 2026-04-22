@@ -110,3 +110,27 @@ def required_strategy_int(strategy, keys) -> int:
         if isinstance(value, int):
             return value
     raise ValueError(f"missing required strategy field {keys[0]}")
+
+
+def required_stage_world_size(strategy) -> int:
+    if "segment_strategies" in strategy:
+        return required_nested_stage_world_size(strategy)
+    return required_parallel_world_size(strategy)
+
+
+def required_nested_stage_world_size(strategy) -> int:
+    segment_strategies = strategy.get("segment_strategies")
+    if not segment_strategies:
+        raise ValueError("segment_strategies must not be empty")
+    counts = {required_parallel_world_size(segment) for segment in segment_strategies}
+    if len(counts) != 1:
+        raise ValueError("segment_strategies must have consistent world size")
+    return counts.pop()
+
+
+def required_parallel_world_size(strategy) -> int:
+    return (
+        required_strategy_int(strategy, ("data_parallel_size", "dp"))
+        * required_strategy_int(strategy, ("tensor_model_parallel_size", "tp"))
+        * required_strategy_int(strategy, ("context_parallel_size", "cp"))
+    )

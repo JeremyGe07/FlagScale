@@ -72,6 +72,11 @@ def summarize_execution_contract(plan: ModelPlan) -> dict[str, object]:
 
 
 def summarize_segment_runtime_contract(plan: ModelPlan) -> dict[str, object]:
+    segment_transitions = [
+        transition
+        for transition in plan.transitions
+        if transition.kind == "segment-redistribution"
+    ]
     return {
         "hetero_stage_segment_splits": [
             [segment.end - segment.start + 1 for segment in stage.segments]
@@ -90,7 +95,7 @@ def summarize_segment_runtime_contract(plan: ModelPlan) -> dict[str, object]:
                 "target_segment_index": transition.target_segment_index,
                 "metadata": to_json_safe(dict(transition.metadata)),
             }
-            for transition in plan.transitions
+            for transition in segment_transitions
         ],
     }
 
