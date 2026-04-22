@@ -15,6 +15,7 @@ except:
     )
 
 from flagscale.train.hetero.parallel_context import RankMapper
+from flagscale.train.hetero.segment_runtime_args import parse_segment_runtime_args
 
 
 class FSTrainArguments:
@@ -79,6 +80,10 @@ class FSTrainArguments:
 
     def pre_validate_args(self):
         """Pre-validate the arguments before Megatron function `validate_args`."""
+        segment_runtime_spec = parse_segment_runtime_args(self.args)
+        if segment_runtime_spec is not None:
+            self.args.segment_runtime_spec = segment_runtime_spec
+
         if self._rank_mapper is None:
             self._build_rank_mapper()
 
