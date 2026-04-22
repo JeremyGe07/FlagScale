@@ -147,6 +147,27 @@ def _segment_runtime_strategy_without_stage_device_groups():
     return strategy
 
 
+@pytest.mark.parametrize(
+    ("stage_strategy_field", "expected_message"),
+    [
+        ("segment_partition_ranges", "provided together"),
+        ("segment_strategies", "provided together"),
+    ],
+)
+def test_lower_strategy_to_plan_rejects_half_configured_segment_metadata(
+    tmp_path,
+    stage_strategy_field,
+    expected_message,
+):
+    config = _config(tmp_path)
+    strategy = _segment_runtime_strategy()
+    for stage_strategy in strategy["stage_strategies"]:
+        stage_strategy.pop(stage_strategy_field)
+
+    with pytest.raises(ValueError, match=expected_message):
+        lower_strategy_to_plan(strategy, config)
+
+
 def test_lower_strategy_to_plan_builds_segment_heterogeneous_plan_from_explicit_stage_metadata(
     tmp_path,
 ):

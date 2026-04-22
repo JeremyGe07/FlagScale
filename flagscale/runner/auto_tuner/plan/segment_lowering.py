@@ -13,6 +13,10 @@ def build_explicit_stage_segments(stage_id: int, stage_range, stage_strategy, st
             stage_strategy,
             stage_device_type,
         )
+    if "segment_partition_ranges" in stage_strategy or "segment_strategies" in stage_strategy:
+        raise ValueError(
+            "segment_partition_ranges and segment_strategies must be provided together"
+        )
     return build_stage_runtime_bridge_segments(stage_range, stage_strategy, stage_device_type)
 
 
