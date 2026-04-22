@@ -168,6 +168,31 @@ def test_lower_strategy_to_plan_rejects_half_configured_segment_metadata(
         lower_strategy_to_plan(strategy, config)
 
 
+@pytest.mark.parametrize(
+    ("segment_partition_ranges", "segment_strategies", "expected_message"),
+    [
+        ([[-1, 0], [1, 1]], None, "non-negative"),
+        ([[0, 0], [1, 2]], None, "within stage range"),
+        ([[0, 0], [0, 1]], None, "contiguous"),
+        ([[0, 0]], [dict(_segment_strategy(tp=2, dp=1))], "exactly cover"),
+    ],
+)
+def test_lower_strategy_to_plan_rejects_malformed_nested_segment_ranges(
+    tmp_path,
+    segment_partition_ranges,
+    segment_strategies,
+    expected_message,
+):
+    config = _config(tmp_path)
+    strategy = _segment_runtime_strategy()
+    strategy["stage_strategies"][0]["segment_partition_ranges"] = segment_partition_ranges
+    if segment_strategies is not None:
+        strategy["stage_strategies"][0]["segment_strategies"] = segment_strategies
+
+    with pytest.raises(ValueError, match=expected_message):
+        lower_strategy_to_plan(strategy, config)
+
+
 def test_lower_strategy_to_plan_builds_segment_heterogeneous_plan_from_explicit_stage_metadata(
     tmp_path,
 ):
@@ -224,6 +249,28 @@ def test_lower_strategy_to_plan_rejects_inconsistent_nested_segment_world_size(t
     strategy["stage_strategies"][1]["segment_strategies"][0]["data_parallel_size"] = 4
 
     with pytest.raises(ValueError, match="world size"):
+        lower_strategy_to_plan(strategy, config)
+
+
+@pytest.mark.parametrize(
+    ("segment_strategy_update", "expected_message"),
+    [
+        ({"pp_local": 2}, "segment-local pipeline size must be 1"),
+        ({"pipeline_model_parallel_size": 2}, "segment-local pipeline size must be 1"),
+    ],
+)
+def test_lower_strategy_to_plan_rejects_non_unit_segment_local_pipeline_semantics(
+    tmp_path,
+    segment_strategy_update,
+    expected_message,
+):
+    config = _config(tmp_path)
+    strategy = _segment_runtime_strategy()
+    stage_strategy = strategy["stage_strategies"][0]["segment_strategies"][0]
+    for key, value in segment_strategy_update.items():
+        stage_strategy[key] = value
+
+    with pytest.raises(ValueError, match=expected_message):
         lower_strategy_to_plan(strategy, config)
 
 

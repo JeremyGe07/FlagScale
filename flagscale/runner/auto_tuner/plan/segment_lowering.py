@@ -32,14 +32,17 @@ def build_segmented_stage_segments(
         raise ValueError("segment_partition_ranges and segment_strategies must have the same length")
     if not segment_ranges:
         raise ValueError("segment_partition_ranges must not be empty")
+    _validate_segment_ranges(stage_id, stage_range, segment_ranges)
     start_offset = int(stage_range[0])
     segments = []
-    for segment_range, segment_strategy in zip(segment_ranges, segment_strategies, strict=True):
+    for segment_index, (segment_range, segment_strategy) in enumerate(
+        zip(segment_ranges, segment_strategies, strict=True)
+    ):
         if len(segment_range) != 2:
             raise ValueError("segment_partition_ranges must contain [start, end] pairs")
         if stage_device_type is not None and "device_type" not in segment_strategy:
             segment_strategy["device_type"] = stage_device_type
-        segment_strategy["pp_local"] = 1
+        _set_segment_local_pipeline_size(stage_id, segment_index, segment_strategy)
         segments.append(
             SegmentPlan(
                 start=start_offset + int(segment_range[0]),
@@ -138,3 +141,46 @@ def required_parallel_world_size(strategy) -> int:
         * required_strategy_int(strategy, ("tensor_model_parallel_size", "tp"))
         * required_strategy_int(strategy, ("context_parallel_size", "cp"))
     )
+
+
+def _validate_segment_ranges(stage_id, stage_range, segment_ranges):
+    stage_start = int(stage_range[0])
+    stage_end = int(stage_range[1])
+    if stage_end < stage_start:
+        raise ValueError(f"stage {stage_id} range is invalid")
+    stage_length = stage_end - stage_start + 1
+    expected_start = 0
+    for segment_index, segment_range in enumerate(segment_ranges):
+        rel_start = int(segment_range[0])
+        rel_end = int(segment_range[1])
+        if rel_start < 0 or rel_end < 0:
+            raise ValueError("segment_partition_ranges must be non-negative")
+        if rel_start > rel_end:
+            raise ValueError("segment_partition_ranges must be ordered start <= end")
+        if rel_start != expected_start:
+            raise ValueError("segment_partition_ranges must be contiguous")
+        if rel_end >= stage_length:
+            raise ValueError("segment_partition_ranges must stay within stage range")
+        expected_start = rel_end + 1
+    if expected_start != stage_length:
+        raise ValueError("segment_partition_ranges must exactly cover stage range")
+
+
+def _set_segment_local_pipeline_size(stage_id, segment_index, segment_strategy):
+    pp_local = segment_strategy.get("pp_local")
+    pipeline_model_parallel_size = segment_strategy.get("pipeline_model_parallel_size")
+    if pp_local is not None:
+        if pp_local != 1:
+            raise ValueError(
+                f"stage {stage_id} segment {segment_index} segment-local pipeline size must be 1"
+            )
+        if pipeline_model_parallel_size is not None and pipeline_model_parallel_size != 1:
+            raise ValueError(
+                f"stage {stage_id} segment {segment_index} segment-local pipeline size must be 1"
+            )
+        return
+    if pipeline_model_parallel_size is not None and pipeline_model_parallel_size != 1:
+        raise ValueError(
+            f"stage {stage_id} segment {segment_index} segment-local pipeline size must be 1"
+        )
+    segment_strategy["pp_local"] = 1
