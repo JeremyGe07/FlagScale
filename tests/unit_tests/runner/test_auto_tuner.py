@@ -138,6 +138,7 @@ def test_generator_injects_plan_runtime_metadata_into_task_config(tmp_path):
             "recompute_granularity": None,
             "recompute_num_layers": None,
             "micro_batch_size": 2,
+            "acc_step": 4,
             "context_parallel_size": 1,
             "expert_model_parallel_size": 1,
             "decoder_first_pipeline_num_layers": None,
@@ -260,6 +261,7 @@ def test_generator_reports_segment_heterogeneous_metadata_but_not_executable(tmp
             "recompute_granularity": None,
             "recompute_num_layers": None,
             "micro_batch_size": 2,
+            "acc_step": 4,
             "context_parallel_size": 1,
             "expert_model_parallel_size": 1,
             "decoder_first_pipeline_num_layers": None,
@@ -289,12 +291,12 @@ def test_generator_reports_segment_heterogeneous_metadata_but_not_executable(tmp
     assert metadata["runtime_executable"] is False
 
 
-def test_generator_rejects_segment_executable_metadata_with_segment_runtime_message(tmp_path):
+def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_path):
     config = OmegaConf.create(
         {
             "experiment": {
                 "exp_dir": str(tmp_path),
-                "runner": {},
+                "runner": {"nnodes": 1, "nproc_per_node": 4},
                 "auto_tuner": {
                     "control": {"train_iters": 3},
                 },
@@ -305,6 +307,11 @@ def test_generator_rejects_segment_executable_metadata_with_segment_runtime_mess
                     "checkpoint": {"save_interval": 100},
                 },
                 "model": {
+                    "num_layers": 4,
+                    "global_batch_size": 8,
+                    "hidden_size": 8,
+                    "num_attention_heads": 4,
+                    "seq_length": 16,
                     "eval_iters": 10,
                     "optimizer": {
                         "lr_scheduler": {
@@ -317,43 +324,88 @@ def test_generator_rejects_segment_executable_metadata_with_segment_runtime_mess
         }
     )
 
-    with pytest.raises(ValueError, match="segment-executable"):
-        Generator(config)._set_plan_metadata(
-            {
-                "idx": 1,
-                "data_parallel_size": 1,
-                "use_distributed_optimizer": False,
-                "tensor_model_parallel_size": 1,
-                "sequence_parallel": True,
-                "pipeline_model_parallel_size": 1,
-                "num_layers_per_virtual_pipeline_stage": None,
-                "recompute_method": None,
-                "recompute_granularity": None,
-                "recompute_num_layers": None,
-                "micro_batch_size": 2,
-                "context_parallel_size": 1,
-                "expert_model_parallel_size": 1,
-                "decoder_first_pipeline_num_layers": None,
-                "decoder_last_pipeline_num_layers": None,
-                "plan_kind": "segment-heterogeneous",
-                "stage_count": 2,
-                "segment_count": 4,
-                "runtime_mode": "segment-executable",
-                "runtime_executable": False,
-                "execution_contract": {
-                    "world_size": 2,
-                    "micro_batch_size": 2,
-                    "gradient_accumulation_steps": 4,
-                    "global_batch_size": 8,
+    task = Generator(config).gen(
+        {
+            "idx": 1,
+            "data_parallel_size": 1,
+            "use_distributed_optimizer": False,
+            "tensor_model_parallel_size": 1,
+            "sequence_parallel": True,
+            "pipeline_model_parallel_size": 2,
+            "num_layers_per_virtual_pipeline_stage": None,
+            "recompute_method": None,
+            "recompute_granularity": None,
+            "recompute_num_layers": None,
+            "micro_batch_size": 2,
+            "acc_step": 4,
+            "context_parallel_size": 1,
+            "expert_model_parallel_size": 1,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
+            "stage_partition_ranges": [[0, 1], [2, 3]],
+            "stage_device_groups": [[0, 1], [2, 3]],
+            "stage_strategies": [
+                {
+                    "segment_partition_ranges": [[0, 0], [1, 1]],
+                    "segment_strategies": [
+                        {
+                            "data_parallel_size": 1,
+                            "tensor_model_parallel_size": 2,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                        {
+                            "data_parallel_size": 2,
+                            "tensor_model_parallel_size": 1,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                    ],
                 },
-                "plan_summary": {
-                    "stage_count": 2,
-                    "vpp_stage_segment_counts": [2, 2],
-                    "contract": {"global_batch_size": 8},
+                {
+                    "segment_partition_ranges": [[0, 0], [1, 1]],
+                    "segment_strategies": [
+                        {
+                            "data_parallel_size": 2,
+                            "tensor_model_parallel_size": 1,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                        {
+                            "data_parallel_size": 1,
+                            "tensor_model_parallel_size": 2,
+                            "pipeline_model_parallel_size": 1,
+                            "context_parallel_size": 1,
+                            "expert_model_parallel_size": 1,
+                            "sequence_parallel": True,
+                            "use_distributed_optimizer": False,
+                        },
+                    ],
                 },
-            },
-            config,
-        )
+            ],
+        }
+    )
+
+    segment_runtime = task.train.system.hetero.segment_runtime
+
+    assert task.experiment.auto_tuner.plan.plan_kind == "segment-heterogeneous"
+    assert task.experiment.auto_tuner.plan.runtime_mode == "segment-executable"
+    assert task.experiment.auto_tuner.plan.runtime_executable is False
+    assert task.experiment.auto_tuner.plan.plan_summary["stages"][0]["segments"][0]["strategy"][
+        "pp_local"
+    ] == 1
+    assert segment_runtime["hetero_stage_segment_splits"] == [[1, 1], [1, 1]]
+    assert segment_runtime["hetero_stage_segment_meshes"][0][0] == [2, 1, 1, 1, 1]
+    assert segment_runtime["hetero_stage_segment_transitions"][0]["kind"] == "segment-redistribution"
 
 
 def test_generator_rejects_incomplete_prefilled_plan_metadata(tmp_path):
