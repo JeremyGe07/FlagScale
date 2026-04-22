@@ -1,9 +1,17 @@
 from omegaconf import OmegaConf
 
+from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.runtime import (
     build_segment_hetero_runtime_overrides,
     build_stage_hetero_runtime_overrides,
 )
+from flagscale.runner.auto_tuner.plan.summary import (
+    plan_kind,
+    segment_count,
+    summarize_execution_contract,
+    summarize_plan,
+)
+from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
 def apply_hetero_runtime_overrides(strategy, config, runtime_mode):
@@ -28,8 +36,50 @@ def apply_hetero_runtime_overrides(strategy, config, runtime_mode):
         config.train.system = OmegaConf.merge(config.train.system, overrides["system"])
 
 
+def validate_prefilled_plan_metadata(strategy, config, metadata):
+    if strategy.get("plan_summary") is None:
+        return
+    if "stage_partition_ranges" not in strategy or "stage_strategies" not in strategy:
+        return
+
+    expected = _build_plan_metadata(strategy, config)
+    mismatches = [
+        key
+        for key in (
+            "plan_kind",
+            "stage_count",
+            "segment_count",
+            "runtime_mode",
+            "runtime_executable",
+            "execution_contract",
+            "plan_summary",
+        )
+        if metadata.get(key) != expected.get(key)
+    ]
+    if mismatches:
+        raise ValueError(
+            "prefilled plan metadata does not match raw segment strategy: {}".format(
+                ", ".join(mismatches)
+            )
+        )
+
+
 def _require_segment_runtime_metadata(strategy):
     if "stage_partition_ranges" not in strategy or "stage_strategies" not in strategy:
         raise ValueError(
             "segment runtime bridge requires stage_partition_ranges and stage_strategies"
         )
+
+
+def _build_plan_metadata(strategy, config):
+    plan = lower_strategy_to_plan(strategy, config)
+    validation = validate_model_plan(plan)
+    return {
+        "plan_kind": plan_kind(plan),
+        "stage_count": len(plan.stages),
+        "segment_count": segment_count(plan),
+        "runtime_mode": validation.runtime_mode,
+        "runtime_executable": validation.runtime_mode == "stage-executable",
+        "execution_contract": summarize_execution_contract(plan),
+        "plan_summary": summarize_plan(plan),
+    }

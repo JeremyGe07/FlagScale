@@ -4,7 +4,10 @@ import os
 from omegaconf import OmegaConf
 
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan, summarize_plan
-from flagscale.runner.auto_tuner.plan.runtime_bridge import apply_hetero_runtime_overrides
+from flagscale.runner.auto_tuner.plan.runtime_bridge import (
+    apply_hetero_runtime_overrides,
+    validate_prefilled_plan_metadata,
+)
 from flagscale.runner.auto_tuner.plan.summary import plan_kind, segment_count, summarize_execution_contract
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
@@ -116,6 +119,7 @@ class Generator:
         metadata = self._build_plan_runtime_metadata(strategy, config)
         if metadata is None:
             return
+        validate_prefilled_plan_metadata(strategy, config, metadata)
         if metadata["runtime_mode"] not in {"stage-executable", "segment-executable"}:
             raise ValueError(
                 "{} plan is {} and cannot enter executable generator path".format(
