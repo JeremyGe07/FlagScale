@@ -239,6 +239,11 @@ def _find_rank_owned_group(group_ranks, rank):
     return None
 
 
+def _segment_group_desc(stage_id, segment_index, token, is_expert):
+    prefix = "exp-" if is_expert else ""
+    return f"segment-{stage_id}-{segment_index}-{prefix}{token}"
+
+
 class RankMapper:
     def __init__(self, args):
         assert (
@@ -701,6 +706,7 @@ class ParallelContext:
         self._segment_mesh_lookup = {}
         self._segment_process_group_ranks = {}
         self._segment_all_process_group_ranks = {}
+        self._segment_process_groups = {}
         self._timeout = timedelta(minutes=self._args.distributed_timeout_minutes)
 
         self._rank = torch.distributed.get_rank()
@@ -730,6 +736,7 @@ class ParallelContext:
         self._segment_mesh_lookup = {}
         self._segment_process_group_ranks = {}
         self._segment_all_process_group_ranks = {}
+        self._segment_process_groups = {}
         if self._segment_runtime_spec is None:
             return
         if len(self._segment_runtime_spec.stages) != len(self._process_meshes):
@@ -749,6 +756,35 @@ class ParallelContext:
                     self._segment_process_group_ranks[group_key] = _find_rank_owned_group(
                         group_ranks, self._rank
                     )
+                    self._segment_process_groups[group_key] = self._build_segment_process_group(
+                        stage_id,
+                        segment_index,
+                        token,
+                        is_expert,
+                        group_ranks,
+                    )
+
+    def _build_segment_process_group(
+        self,
+        stage_id,
+        segment_index,
+        token,
+        is_expert,
+        group_ranks,
+    ):
+        if not torch.distributed.is_initialized():
+            return None
+        group = None
+        for ranks in group_ranks:
+            created = create_group(
+                list(ranks),
+                timeout=self._timeout,
+                backend=self._args.distributed_backend,
+                group_desc=_segment_group_desc(stage_id, segment_index, token, is_expert),
+            )
+            if self._rank in ranks:
+                group = created
+        return group
 
     def _ensure_segment_runtime(self):
         if self._segment_runtime_spec is None:
@@ -780,6 +816,20 @@ class ParallelContext:
         if check_initialized:
             assert ranks is not None, f"segment runtime group {token} is not initialized"
         return ranks
+
+    def get_segment_process_group(
+        self,
+        stage_id,
+        segment_index,
+        token,
+        is_expert=False,
+        check_initialized=True,
+    ):
+        self._ensure_segment_runtime()
+        group = self._segment_process_groups.get((stage_id, segment_index, token, is_expert))
+        if check_initialized:
+            assert group is not None, f"segment runtime process group {token} is not initialized"
+        return group
 
     def get_segment_all_process_group_ranks(
         self,
