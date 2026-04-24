@@ -22,6 +22,13 @@ from tqdm.asyncio import tqdm
 from flagscale.logger import logger
 
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+_LITERAL_LIST_ARG_KEYS = frozenset(
+    {
+        "hetero-stage-segment-splits",
+        "hetero-stage-segment-meshes",
+        "hetero-stage-segment-transitions",
+    }
+)
 
 
 def log_and_raise_error(message):
@@ -321,8 +328,11 @@ def flatten_dict_to_args(config_dict, ignore_keys=[], do_dash_replace=True):
             continue
         elif isinstance(value, list):
             args.append(f"--{key}")
-            for v in value:
-                args.append(f"{v}")
+            if key.replace("_", "-") in _LITERAL_LIST_ARG_KEYS:
+                args.append(json.dumps(value))
+            else:
+                for v in value:
+                    args.append(f"{v}")
         elif isinstance(value, bool):
             if value:
                 args.append(f"--{key}")

@@ -1,5 +1,5 @@
 diff --git a/megatron/training/arguments.py b/megatron/training/arguments.py
-index 1120c7529..0a33c32e9 100644
+index 1120c7529..424020504 100644
 --- a/megatron/training/arguments.py
 +++ b/megatron/training/arguments.py
 @@ -67,6 +67,7 @@ def add_megatron_arguments(parser: argparse.ArgumentParser):
@@ -628,7 +628,7 @@ index 1120c7529..0a33c32e9 100644
  
      return parser
  
-@@ -3275,3 +3552,98 @@ def _add_sft_args(parser):
+@@ -3275,3 +3552,103 @@ def _add_sft_args(parser):
      group.add_argument('--sft-tokenizer-prompt-format', type=str, default="nemotron-h-aligned", 
                         help='SFT prompt format.')
      return parser
@@ -652,6 +652,12 @@ index 1120c7529..0a33c32e9 100644
 +                       'This argument must be in the form: TP0, CP0, DP0, PP0, TP1, CP0, DP1, PP1...TPN, CPN, DPN, PPN. CP and TP size can be different, sum of PP should match pipeline-model-parallel-size, DP size should be the same.')
 +    group.add_argument('--expert-tensor-parallel-size-per-process-mesh', nargs='*', type=int, default=None,
 +                       help='The number of tensor parallel experts for each process-mesh. The number of the list should be equal to the number of process-meshes.')
++    group.add_argument('--hetero-stage-segment-splits', type=json.loads, default=None,
++                       help='Segment layer counts per pipeline stage, encoded as JSON.')
++    group.add_argument('--hetero-stage-segment-meshes', type=json.loads, default=None,
++                       help='Segment TP-CP-EP-DP-PP meshes per pipeline stage, encoded as JSON.')
++    group.add_argument('--hetero-stage-segment-transitions', type=json.loads, default=None,
++                       help='Segment redistribution transitions, encoded as JSON.')
 +    group.add_argument('--hetero-use-cpu-communication', action='store_true', help='Use CPU for communication for heterogeneous communication.')
 +    
 +    return parser
@@ -726,4 +732,3 @@ index 1120c7529..0a33c32e9 100644
 +    )
 +    return parser
 +########## FlagScale End ##########
-+

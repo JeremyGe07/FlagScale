@@ -277,7 +277,7 @@ def _generate_run_script_train(
         f.write(f"\n")
         f.write(f"export PYTHONPATH={root_dir}:{megatron_dir}:${{PYTHONPATH}}\n")
         f.write(f"\n")
-        f.write(f'cmd="{cmd}"\n')
+        f.write(f"cmd={shlex.quote(cmd)}\n")
         f.write(f"\n")
         if enable_monitoring:
             monitor_launcher_path = os.path.join(
