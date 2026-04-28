@@ -4,6 +4,10 @@ import sys
 from pathlib import Path
 
 from flagscale.runner.auto_tuner.profile_acquisition.backends.base import ProfileBackend
+from flagscale.runner.auto_tuner.profile_acquisition.backends.nvidia_topology import (
+    TOPOLOGY_COMMAND,
+    select_representative_pairs,
+)
 from flagscale.runner.auto_tuner.profile_acquisition.models import AcquisitionMeasurement
 
 DEVICE_MEMORY_COMMAND = [
@@ -15,6 +19,7 @@ DEFAULT_TEST_MIN_BYTES = "8"
 DEFAULT_TEST_MAX_BYTES = "128M"
 DEFAULT_TEST_STEP_FACTOR = "2"
 DEFAULT_TEST_GPUS = 2
+P2P_TEST_GPUS = 2
 NCCL_TESTS_BIN_DIR_ENV = "NCCL_TESTS_BIN_DIR"
 P2P_BINARY = "p2p_bw"
 ALL_REDUCE_BINARY = "all_reduce_perf"
@@ -47,7 +52,16 @@ class NvidiaProfileBackend(ProfileBackend):
         runner=None,
         nccl_tests_bin_dir=None,
         ngpus=DEFAULT_TEST_GPUS,
+        p2p_pair_classes=None,
+        all_reduce_group_sizes=None,
     ):
+        if p2p_pair_classes is not None or all_reduce_group_sizes is not None:
+            return self._collect_extended_collectives(
+                runner=runner,
+                ngpus=ngpus,
+                p2p_pair_classes=p2p_pair_classes,
+                all_reduce_group_sizes=all_reduce_group_sizes,
+            )
         p2p_command = _build_collective_command(
             command=p2p_command,
             binary_name=P2P_BINARY,
@@ -69,8 +83,65 @@ class NvidiaProfileBackend(ProfileBackend):
             "all_reduce": self._collect_collective("all_reduce", all_reduce_command),
         }
 
-    def _collect_collective(self, name, command):
-        output = _run_command(command)
+    def _collect_extended_collectives(
+        self,
+        runner,
+        ngpus,
+        p2p_pair_classes,
+        all_reduce_group_sizes,
+    ):
+        _validate_torch_runner(runner)
+        p2p_classes = (
+            self._collect_p2p_classes(p2p_pair_classes)
+            if p2p_pair_classes is not None
+            else {}
+        )
+        group_sizes = _resolve_group_sizes(all_reduce_group_sizes, ngpus)
+        all_reduce_profiles = self._collect_all_reduce_profiles(group_sizes)
+        result = {
+            "p2p": _legacy_p2p_measurement(p2p_classes)
+            if p2p_classes
+            else self._collect_collective("p2p", _build_torchrun_command("p2p", ngpus)),
+            "all_reduce": all_reduce_profiles[max(all_reduce_profiles)],
+            "all_reduce_profiles": all_reduce_profiles,
+        }
+        if p2p_classes:
+            result["p2p_classes"] = p2p_classes
+        return result
+
+    def _collect_p2p_classes(self, p2p_pair_classes):
+        selected_pairs = select_representative_pairs(
+            _run_command(TOPOLOGY_COMMAND),
+            p2p_pair_classes,
+        )
+        measurements = {}
+        for name, pair in selected_pairs.items():
+            measurement = self._collect_collective(
+                "p2p",
+                _build_torchrun_command("p2p", P2P_TEST_GPUS),
+                env=_with_visible_devices(pair.devices),
+            )
+            measurements[name] = _with_metadata(
+                measurement,
+                {"collective": "p2p", "gpu_pair": list(pair.devices), "pair_class": name},
+            )
+        return measurements
+
+    def _collect_all_reduce_profiles(self, group_sizes):
+        profiles = {}
+        for group_size in group_sizes:
+            measurement = self._collect_collective(
+                "all_reduce",
+                _build_torchrun_command("all_reduce", group_size),
+            )
+            profiles[group_size] = _with_metadata(
+                measurement,
+                {"collective": "all_reduce", "group_size": group_size},
+            )
+        return profiles
+
+    def _collect_collective(self, name, command, env=None):
+        output = _run_command(command, env=env)
         metrics = _parse_key_value_output(output)
         return AcquisitionMeasurement(
             kind="collective_bw_latency",
@@ -80,8 +151,11 @@ class NvidiaProfileBackend(ProfileBackend):
         )
 
 
-def _run_command(command):
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+def _run_command(command, env=None):
+    run_kwargs = {"capture_output": True, "text": True, "check": False}
+    if env is not None:
+        run_kwargs["env"] = env
+    result = subprocess.run(command, **run_kwargs)
     if result.returncode != 0:
         raise RuntimeError(
             f"Command failed with exit code {result.returncode}: {' '.join(command)}\n"
@@ -103,6 +177,45 @@ def _parse_key_value_output(output):
     return metrics
 
 
+def _validate_torch_runner(runner):
+    if runner != RUNNER_TORCH_NCCL:
+        raise ValueError("Topology-aware collective acquisition requires runner torch_nccl.")
+
+
+def _resolve_group_sizes(all_reduce_group_sizes, ngpus):
+    if all_reduce_group_sizes is None:
+        return (ngpus,)
+    group_sizes = tuple(all_reduce_group_sizes)
+    if not group_sizes:
+        raise ValueError("all_reduce_group_sizes must include at least one group size.")
+    invalid = [group_size for group_size in group_sizes if group_size <= 0]
+    if invalid:
+        raise ValueError(f"all_reduce_group_sizes must be positive integers: {invalid}")
+    return group_sizes
+
+
+def _legacy_p2p_measurement(p2p_classes):
+    if "sys" in p2p_classes:
+        return p2p_classes["sys"]
+    return min(p2p_classes.values(), key=lambda measurement: measurement.metrics["bandwidth_gbps"])
+
+
+def _with_metadata(measurement, metadata):
+    return AcquisitionMeasurement(
+        kind=measurement.kind,
+        source=measurement.source,
+        metrics=dict(measurement.metrics),
+        metadata=metadata,
+    )
+
+
+def _with_visible_devices(devices):
+    return {
+        **os.environ,
+        "CUDA_VISIBLE_DEVICES": ",".join(str(device) for device in devices),
+    }
+
+
 def _build_collective_command(
     command,
     binary_name,
@@ -119,7 +232,8 @@ def _build_collective_command(
 
 
 def _build_torchrun_command(collective, ngpus):
-    script_path = Path(__file__).resolve().parents[5] / "tools" / "profile_acquisition" / TORCH_BENCHMARK_SCRIPT
+    repo_root = Path(__file__).resolve().parents[5]
+    script_path = repo_root / "tools" / "profile_acquisition" / TORCH_BENCHMARK_SCRIPT
     return [
         sys.executable,
         "-m",

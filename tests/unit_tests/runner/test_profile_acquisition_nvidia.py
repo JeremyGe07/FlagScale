@@ -157,6 +157,63 @@ def test_nvidia_backend_collect_collectives_can_build_torch_runner_commands():
     assert measurements['all_reduce'].metrics['latency_us'] == 7.2
 
 
+def _topology_aware_collective_outputs():
+    return [
+        CompletedProcess(args=['topo'], returncode=0, stdout=_topology_output(), stderr=''),
+        _collective_process('p2p-pix', bandwidth_gbps=210.0, latency_us=3.1),
+        _collective_process('p2p-sys', bandwidth_gbps=95.0, latency_us=11.4),
+        _collective_process('ar2', bandwidth_gbps=154.0, latency_us=8.5),
+        _collective_process('ar4', bandwidth_gbps=121.0, latency_us=13.2),
+    ]
+
+
+def _topology_output():
+    return (
+        '        GPU0 GPU1 GPU2 GPU3 CPU Affinity NUMA Affinity\n'
+        'GPU0     X   PIX  SYS  SYS  0-47         0\n'
+        'GPU1    PIX   X   SYS  SYS  0-47         0\n'
+        'GPU2    SYS  SYS   X   PIX  48-95        1\n'
+        'GPU3    SYS  SYS  PIX   X   48-95        1\n'
+    )
+
+
+def _collective_process(args, bandwidth_gbps, latency_us):
+    output = f'bandwidth_gbps={bandwidth_gbps}\nlatency_us={latency_us}\n'
+    return CompletedProcess(args=[args], returncode=0, stdout=output, stderr='')
+
+
+def test_nvidia_backend_collect_collectives_builds_pair_class_and_group_size_runs():
+    backend = NvidiaProfileBackend()
+
+    with patch(
+        'flagscale.runner.auto_tuner.profile_acquisition.backends.nvidia.subprocess.run',
+        side_effect=_topology_aware_collective_outputs(),
+    ) as run_mock:
+        measurements = backend.collect_collectives(
+            p2p_command=None,
+            all_reduce_command=None,
+            runner='torch_nccl',
+            p2p_pair_classes='auto',
+            all_reduce_group_sizes=(2, 4),
+        )
+
+    pix_call = run_mock.call_args_list[1]
+    sys_call = run_mock.call_args_list[2]
+    ar2_call = run_mock.call_args_list[3]
+    ar4_call = run_mock.call_args_list[4]
+    assert '--nproc_per_node=2' in pix_call.args[0]
+    assert '--nproc_per_node=2' in ar2_call.args[0]
+    assert '--nproc_per_node=4' in ar4_call.args[0]
+    assert pix_call.kwargs['env']['CUDA_VISIBLE_DEVICES'] == '0,1'
+    assert sys_call.kwargs['env']['CUDA_VISIBLE_DEVICES'] == '0,2'
+    assert measurements['p2p_classes']['pix'].metrics['bandwidth_gbps'] == 210.0
+    assert measurements['p2p_classes']['sys'].metadata['gpu_pair'] == [0, 2]
+    assert measurements['all_reduce_profiles'][2].metrics['latency_us'] == 8.5
+    assert measurements['all_reduce_profiles'][4].metrics['bandwidth_gbps'] == 121.0
+    assert measurements['p2p'].metrics['bandwidth_gbps'] == 95.0
+    assert measurements['all_reduce'].metrics['latency_us'] == 13.2
+
+
 def test_nvidia_backend_collect_collectives_rejects_unknown_runner():
     backend = NvidiaProfileBackend()
 
