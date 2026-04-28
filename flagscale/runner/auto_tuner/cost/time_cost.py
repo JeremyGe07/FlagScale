@@ -1,6 +1,7 @@
 from copy import deepcopy
 from math import log2
 
+from flagscale.runner.auto_tuner.cost.collective_profiles import resolve_all_reduce_metrics
 from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
@@ -170,7 +171,9 @@ def _estimate_transition_time(spec, config):
         payload_bytes=payload_bytes,
         repetitions=repetitions,
     )
-    transition_ms = _link_transfer_ms((bandwidth_gbps, latency_us, fabric), payload_bytes, repetitions)
+    transition_ms = _link_transfer_ms(
+        (bandwidth_gbps, latency_us, fabric), payload_bytes, repetitions
+    )
     return {
         "source_stage_id": spec["source_stage_id"],
         "target_stage_id": spec["target_stage_id"],
@@ -633,11 +636,19 @@ def _communication_link(profile, kind, traffic):
             float(intra_node["p2p_latency_us"]),
             intra_node["fabric"],
         )
-    return (
-        float(intra_node["all_reduce_bandwidth_gbps"]),
-        float(intra_node["all_reduce_latency_us"]),
-        intra_node["fabric"],
+    bandwidth_gbps, latency_us = resolve_all_reduce_metrics(
+        interconnect,
+        _collective_group_size(profile, kind),
     )
+    return bandwidth_gbps, latency_us, intra_node["fabric"]
+
+
+def _collective_group_size(profile, kind):
+    if kind == "dp":
+        return profile["runtime"]["strategy"]["data_parallel_size"]
+    if kind in ("tp", "ep"):
+        return _group_size(profile, kind)
+    raise ValueError(f"Unsupported collective communication kind: {kind}")
 
 
 def _group_spans_nodes(profile, kind):

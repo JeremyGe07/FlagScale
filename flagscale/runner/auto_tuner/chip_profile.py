@@ -150,7 +150,10 @@ def _validate_interconnect(interconnect):
         numeric_fields = [field for field in fields if field != "fabric"]
         _require_positive_fields(f"interconnect.{name}", sub_section, numeric_fields)
         if name == "intra_node" and not isinstance(sub_section["fabric"], str):
-            raise ValueError("Chip profile field 'interconnect.intra_node.fabric' must be a string.")
+            raise ValueError("Chip profile field 'interconnect.intra_node.fabric' must be string.")
+        if name == "intra_node":
+            _validate_optional_p2p_classes(sub_section)
+            _validate_optional_collective_profiles(sub_section)
 
 
 def _validate_boolean_fields(section_name, section):
@@ -231,6 +234,58 @@ def _require_positive_fields(section_name, section, fields):
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
             raise ValueError(f"Chip profile field '{section_name}.{field}' must be positive.")
 
+
+def _validate_optional_p2p_classes(intra_node):
+    if "p2p_classes" not in intra_node:
+        return
+    classes = intra_node["p2p_classes"]
+    classes = _require_mapping("interconnect.intra_node.p2p_classes", classes)
+    for class_name, p2p_class in classes.items():
+        section_name = f"interconnect.intra_node.p2p_classes.{class_name}"
+        p2p_class = _require_mapping(section_name, p2p_class)
+        _require_keys(section_name, p2p_class, ("bandwidth_gbps", "latency_us"))
+        _require_positive_fields(section_name, p2p_class, ("bandwidth_gbps", "latency_us"))
+        if "gpu_pair" in p2p_class:
+            _validate_gpu_pair(f"{section_name}.gpu_pair", p2p_class["gpu_pair"])
+
+
+def _validate_optional_collective_profiles(intra_node):
+    if "collective_profiles" not in intra_node:
+        return
+    profiles = intra_node["collective_profiles"]
+    profiles = _require_mapping("interconnect.intra_node.collective_profiles", profiles)
+    if "all_reduce" not in profiles:
+        return
+    all_reduce = profiles["all_reduce"]
+    all_reduce = _require_mapping(
+        "interconnect.intra_node.collective_profiles.all_reduce",
+        all_reduce,
+    )
+    for group_key, group_profile in all_reduce.items():
+        _validate_group_size_key(group_key)
+        section_name = f"interconnect.intra_node.collective_profiles.all_reduce.{group_key}"
+        group_profile = _require_mapping(section_name, group_profile)
+        _require_keys(section_name, group_profile, ("bandwidth_gbps", "latency_us"))
+        _require_positive_fields(section_name, group_profile, ("bandwidth_gbps", "latency_us"))
+
+
+def _validate_group_size_key(group_key):
+    prefix = "group_size_"
+    suffix = group_key[len(prefix) :] if isinstance(group_key, str) else ""
+    if not isinstance(group_key, str) or not group_key.startswith(prefix):
+        raise ValueError(f"Invalid all-reduce group profile key: {group_key}")
+    if not suffix.isdigit() or int(suffix) <= 0:
+        raise ValueError(f"Invalid all-reduce group profile key: {group_key}")
+
+def _validate_gpu_pair(field_name, gpu_pair):
+    valid_pair = (
+        isinstance(gpu_pair, list)
+        and len(gpu_pair) == 2
+        and all(isinstance(device, int) and not isinstance(device, bool) for device in gpu_pair)
+        and all(device >= 0 for device in gpu_pair)
+    )
+    if not valid_pair:
+        raise ValueError(f"Chip profile field '{field_name}' must be two non-negative ints.")
 
 def _require_non_negative_number(field_name, value):
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
