@@ -42,6 +42,33 @@ def _write_profile_yaml(path):
     OmegaConf.save(config=OmegaConf.create(profile), f=path)
 
 
+def _collective_measurement(bandwidth_gbps, latency_us, metadata):
+    return AcquisitionMeasurement(
+        kind='collective_bw_latency',
+        source='nvidia',
+        metrics={'bandwidth_gbps': bandwidth_gbps, 'latency_us': latency_us},
+        metadata=metadata,
+    )
+
+
+class TopologyAwareFakeBackend:
+    def collect_collectives(self, *args, **kwargs):
+        assert kwargs['p2p_pair_classes'] == 'auto'
+        assert kwargs['all_reduce_group_sizes'] == (2, 4)
+        return {
+            'p2p': _collective_measurement(95.0, 11.4, {'collective': 'p2p'}),
+            'all_reduce': _collective_measurement(121.0, 13.2, {'collective': 'all_reduce'}),
+            'p2p_classes': {
+                'pix': _collective_measurement(210.0, 3.1, {'gpu_pair': [0, 1]}),
+                'sys': _collective_measurement(95.0, 11.4, {'gpu_pair': [0, 2]}),
+            },
+            'all_reduce_profiles': {
+                2: _collective_measurement(154.0, 8.5, {'group_size': 2}),
+                4: _collective_measurement(121.0, 13.2, {'group_size': 4}),
+            },
+        }
+
+
 def test_measure_collectives_requires_explicit_runner(tmp_path):
     profile_in = tmp_path / 'nvidia_l20.yaml'
     profile_out = tmp_path / 'nvidia_l20.collectives.yaml'
@@ -76,12 +103,16 @@ def test_measure_collectives_torch_runner_does_not_require_nccl_tests_dir(tmp_pa
             runner=None,
             nccl_tests_bin_dir=None,
             ngpus=2,
+            p2p_pair_classes=None,
+            all_reduce_group_sizes=None,
         ):
             assert p2p_command is None
             assert all_reduce_command is None
             assert runner == 'torch_nccl'
             assert nccl_tests_bin_dir is None
             assert ngpus == 2
+            assert p2p_pair_classes is None
+            assert all_reduce_group_sizes is None
             return {
                 'p2p': AcquisitionMeasurement(
                     kind='collective_bw_latency',
@@ -116,6 +147,48 @@ def test_measure_collectives_torch_runner_does_not_require_nccl_tests_dir(tmp_pa
     assert exit_code == 0
     assert measured['interconnect']['intra_node']['p2p_bandwidth_gbps'] == 71.5
     assert measured['interconnect']['intra_node']['all_reduce_latency_us'] == 7.2
+
+
+def test_measure_collectives_torch_runner_writes_extended_measured_yaml(tmp_path):
+    profile_in = tmp_path / 'nvidia_a800.yaml'
+    profile_out = tmp_path / 'nvidia_a800.measured.yaml'
+    _write_profile_yaml(profile_in)
+
+    with patch(
+        'tools.profile_acquisition.profile_acquire.build_backend',
+        return_value=TopologyAwareFakeBackend(),
+    ):
+        exit_code = profile_acquire_main(
+            [
+                '--profile-in',
+                str(profile_in),
+                '--profile-out',
+                str(profile_out),
+                '--backend',
+                'nvidia',
+                '--measure-collectives',
+                '--collective-runner',
+                'torch_nccl',
+                '--p2p-pair-classes',
+                'auto',
+                '--all-reduce-group-sizes',
+                '2,4',
+            ]
+        )
+
+    measured = OmegaConf.to_container(OmegaConf.load(profile_out), resolve=True)
+    intra_node = measured['interconnect']['intra_node']
+    assert exit_code == 0
+    assert intra_node['p2p_bandwidth_gbps'] == 95.0
+    assert intra_node['p2p_classes']['pix']['bandwidth_gbps'] == 210.0
+    assert intra_node['p2p_classes']['sys']['gpu_pair'] == [0, 2]
+    assert _all_reduce_group(intra_node, 2)['latency_us'] == 8.5
+    assert _all_reduce_group(intra_node, 4)['bandwidth_gbps'] == 121.0
+
+
+def _all_reduce_group(intra_node, group_size):
+    profiles = intra_node['collective_profiles']['all_reduce']
+    return profiles[f'group_size_{group_size}']
 
 
 def test_measure_collectives_nccl_tests_runner_requires_bin_dir_or_commands(tmp_path):

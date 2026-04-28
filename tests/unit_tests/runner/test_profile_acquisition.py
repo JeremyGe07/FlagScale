@@ -12,7 +12,6 @@ from flagscale.runner.auto_tuner.profile_acquisition.history_parser import build
 from flagscale.runner.auto_tuner.profile_acquisition.models import AcquisitionMeasurement
 from flagscale.runner.auto_tuner.profile_acquisition.profile_patch import merge_profile_patch
 from tools.profile_acquisition.profile_acquire import main as profile_acquire_main
-
 def _write_history_csv(path: Path):
     rows = [
         {
@@ -54,7 +53,6 @@ def _write_history_csv(path: Path):
         )
         writer.writeheader()
         writer.writerows(rows)
-
 def _write_tuner_log(path: Path):
     path.write_text(
         "\n".join(
@@ -111,7 +109,6 @@ def _write_profile_yaml(path: Path):
         },
     }
     OmegaConf.save(config=OmegaConf.create(profile), f=path)
-
 def test_build_acquisition_dataset_parses_history_and_log(tmp_path):
     history_csv = tmp_path / 'history.csv'
     tuner_log = tmp_path / 'tuner.log'
@@ -126,7 +123,6 @@ def test_build_acquisition_dataset_parses_history_and_log(tmp_path):
     assert records[0]['max_mem_mb'] == 33450.0
     assert records[1]['status'] == 'oom'
     assert records[1]['oom_detail']['reserved_unallocated_mb'] == 10024.96
-
 def test_fit_memory_bias_prefers_oom_recall_with_bounded_false_prunes(tmp_path):
     history_csv = tmp_path / 'history.csv'
     tuner_log = tmp_path / 'tuner.log'
@@ -256,12 +252,16 @@ def test_profile_acquire_cli_collects_collectives_with_nccl_tests_dir(tmp_path):
             runner=None,
             nccl_tests_bin_dir=None,
             ngpus=2,
+            p2p_pair_classes=None,
+            all_reduce_group_sizes=None,
         ):
             assert p2p_command is None
             assert all_reduce_command is None
             assert runner == 'nccl_tests'
             assert nccl_tests_bin_dir == '/opt/nccl-tests/build'
             assert ngpus == 2
+            assert p2p_pair_classes is None
+            assert all_reduce_group_sizes is None
             return {
                 'p2p': AcquisitionMeasurement(
                     kind='collective_bw_latency',
