@@ -4,6 +4,9 @@ from unittest.mock import patch
 import pytest
 
 from flagscale.runner.auto_tuner.profile_acquisition.backends.nvidia import NvidiaProfileBackend
+from flagscale.runner.auto_tuner.profile_acquisition.backends.nvidia_topology import (
+    select_representative_pairs,
+)
 
 
 def test_nvidia_backend_collect_device_memory_reads_homogeneous_gpus():
@@ -212,6 +215,61 @@ def test_nvidia_backend_collect_collectives_builds_pair_class_and_group_size_run
     assert measurements['all_reduce_profiles'][4].metrics['bandwidth_gbps'] == 121.0
     assert measurements['p2p'].metrics['bandwidth_gbps'] == 95.0
     assert measurements['all_reduce'].metrics['latency_us'] == 13.2
+
+
+def test_select_representative_pairs_strips_ansi_decorated_gpu_header_tokens():
+    topology = (
+        '        \x1b[4mGPU0\x1b[0m GPU1 GPU2 GPU3 CPU Affinity NUMA Affinity\n'
+        'GPU0     X   PIX  SYS  SYS  0-47         0\n'
+        'GPU1    PIX   X   SYS  SYS  0-47         0\n'
+        'GPU2    SYS  SYS   X   PIX  48-95        1\n'
+        'GPU3    SYS  SYS  PIX   X   48-95        1\n'
+    )
+
+    selected = select_representative_pairs(topology, 'auto')
+
+    assert selected['pix'].devices == (0, 1)
+    assert selected['sys'].devices == (0, 2)
+
+
+def test_select_representative_pairs_rejects_incomplete_rows_with_metadata_tokens():
+    topology = (
+        '        GPU0 GPU1 GPU2 CPU Affinity NUMA Affinity\n'
+        'GPU0     X   PIX  0-47         0\n'
+        'GPU1    PIX   X   SYS          0-47         0\n'
+        'GPU2    SYS  SYS   X           48-95        1\n'
+    )
+
+    with pytest.raises(ValueError, match='invalid link token'):
+        select_representative_pairs(topology, 'pix')
+
+
+def test_select_representative_pairs_rejects_missing_requested_pair_class():
+    topology = (
+        '        GPU0 GPU1 CPU Affinity NUMA Affinity\n'
+        'GPU0     X   PIX  0-47         0\n'
+        'GPU1    PIX   X   0-47         0\n'
+    )
+
+    with pytest.raises(ValueError, match='Missing representative GPU pair'):
+        select_representative_pairs(topology, 'sys')
+
+
+def test_select_representative_pairs_rejects_unsupported_pair_class():
+    with pytest.raises(ValueError, match='Unsupported GPU pair classes: nvlink'):
+        select_representative_pairs(_topology_output(), 'nvlink')
+
+
+def test_nvidia_backend_collect_collectives_rejects_invalid_group_sizes_before_running():
+    backend = NvidiaProfileBackend()
+
+    with pytest.raises(ValueError, match='positive integers'):
+        backend.collect_collectives(
+            p2p_command=None,
+            all_reduce_command=None,
+            runner='torch_nccl',
+            all_reduce_group_sizes=(0,),
+        )
 
 
 def test_nvidia_backend_collect_collectives_rejects_unknown_runner():
