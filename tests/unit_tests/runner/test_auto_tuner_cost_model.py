@@ -155,6 +155,20 @@ def _build_chip_profile(
     }
 
 
+def _build_group_size_all_reduce_profile():
+    profile = _build_chip_profile(
+        all_reduce_bandwidth_gbps=45,
+        all_reduce_latency_us=8,
+    )
+    profile["interconnect"]["intra_node"]["collective_profiles"] = {
+        "all_reduce": {
+            "group_size_2": {"bandwidth_gbps": 200, "latency_us": 2},
+            "group_size_4": {"bandwidth_gbps": 80, "latency_us": 20},
+        }
+    }
+    return profile
+
+
 def _build_strategy(**overrides):
     strategy = {
         "data_parallel_size": 1,
@@ -407,6 +421,30 @@ def test_build_cost_profile_requires_strategy_fields(tmp_path):
         build_cost_profile(config, strategy)
 
 
+def test_load_chip_profile_rejects_invalid_optional_p2p_class(tmp_path):
+    from flagscale.runner.auto_tuner.chip_profile import normalize_chip_profile
+
+    profile = _build_chip_profile()
+    profile["interconnect"]["intra_node"]["p2p_classes"] = {
+        "sys": {"bandwidth_gbps": 0, "latency_us": 11.4, "gpu_pair": [0, 2]}
+    }
+
+    with pytest.raises(ValueError, match="p2p_classes.sys.bandwidth_gbps"):
+        normalize_chip_profile(profile)
+
+
+def test_load_chip_profile_rejects_invalid_all_reduce_group_profile(tmp_path):
+    from flagscale.runner.auto_tuner.chip_profile import normalize_chip_profile
+
+    profile = _build_chip_profile()
+    profile["interconnect"]["intra_node"]["collective_profiles"] = {
+        "all_reduce": {"group_size_zero": {"bandwidth_gbps": 80, "latency_us": 20}}
+    }
+
+    with pytest.raises(ValueError, match="group_size_zero"):
+        normalize_chip_profile(profile)
+
+
 def test_memory_cost_returns_breakdown_and_total(tmp_path):
     config = build_autotuner_config(
         tmp_path,
@@ -542,13 +580,13 @@ def test_time_cost_cross_node_dp_comm_is_more_expensive_than_single_node(tmp_pat
     strategy = _build_strategy(data_parallel_size=2)
     single_node_config = build_autotuner_config(
         tmp_path / "single-node",
-        chip_profile={"profile": _build_chip_profile()},
+        chip_profile={"profile": _build_group_size_all_reduce_profile()},
         runner_nnodes=1,
         runner_nproc_per_node=2,
     )
     cross_node_config = build_autotuner_config(
         tmp_path / "cross-node",
-        chip_profile={"profile": _build_chip_profile()},
+        chip_profile={"profile": _build_group_size_all_reduce_profile()},
         runner_nnodes=2,
         runner_nproc_per_node=1,
     )
@@ -557,6 +595,103 @@ def test_time_cost_cross_node_dp_comm_is_more_expensive_than_single_node(tmp_pat
     cross_node = _estimate_time_cost(strategy, cross_node_config)
 
     assert cross_node["time_breakdown"]["dp_comm_ms"] > single_node["time_breakdown"]["dp_comm_ms"]
+
+
+def test_resolve_all_reduce_metrics_prefers_group_size_specific_profile():
+    from flagscale.runner.auto_tuner.cost.collective_profiles import (
+        resolve_all_reduce_metrics,
+    )
+
+    interconnect = _build_chip_profile()["interconnect"]
+    interconnect["intra_node"]["collective_profiles"] = {
+        "all_reduce": {
+            "group_size_2": {"bandwidth_gbps": 200, "latency_us": 2},
+            "group_size_4": {"bandwidth_gbps": 80, "latency_us": 20},
+        }
+    }
+
+    assert resolve_all_reduce_metrics(interconnect, 2) == (200.0, 2.0)
+
+
+def test_resolve_all_reduce_metrics_falls_back_to_legacy_all_reduce_scalar():
+    from flagscale.runner.auto_tuner.cost.collective_profiles import (
+        resolve_all_reduce_metrics,
+    )
+
+    interconnect = _build_chip_profile(
+        all_reduce_bandwidth_gbps=45,
+        all_reduce_latency_us=8,
+    )["interconnect"]
+
+    assert resolve_all_reduce_metrics(interconnect, 2) == (45.0, 8.0)
+
+
+def test_time_cost_prefers_group_size_specific_all_reduce_profile(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_group_size_all_reduce_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+    )
+
+    dp2 = _estimate_time_cost(_build_strategy(data_parallel_size=2), config)
+    dp4 = _estimate_time_cost(_build_strategy(data_parallel_size=4), config)
+
+    assert dp2["time_breakdown"]["dp_comm_ms"] < dp4["time_breakdown"]["dp_comm_ms"]
+
+
+def test_time_cost_uses_tp_group_size_specific_all_reduce_profile(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_group_size_all_reduce_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+    )
+
+    tp2 = _estimate_time_cost(_build_strategy(tensor_model_parallel_size=2), config)
+    tp4 = _estimate_time_cost(_build_strategy(tensor_model_parallel_size=4), config)
+
+    assert tp2["time_breakdown"]["tp_comm_ms"] < tp4["time_breakdown"]["tp_comm_ms"]
+
+
+def test_time_cost_uses_ep_group_size_specific_all_reduce_profile(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_group_size_all_reduce_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides={
+            "num_experts": 8,
+            "moe_router_topk": 2,
+            "moe_layer_freq": 1,
+            "moe_token_dispatcher_type": "alltoall",
+        },
+    )
+
+    ep2 = _estimate_time_cost(_build_strategy(expert_model_parallel_size=2), config)
+    ep4 = _estimate_time_cost(_build_strategy(expert_model_parallel_size=4), config)
+
+    assert ep2["time_breakdown"]["expert_comm_ms"] < ep4["time_breakdown"]["expert_comm_ms"]
+
+
+def test_time_cost_falls_back_to_legacy_all_reduce_scalar_when_group_profile_missing(
+    tmp_path,
+):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={
+            "profile": _build_chip_profile(
+                all_reduce_bandwidth_gbps=45,
+                all_reduce_latency_us=8,
+            )
+        },
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+    )
+
+    result = _estimate_time_cost(_build_strategy(data_parallel_size=2), config)
+
+    assert result["time_breakdown"]["dp_comm_ms"] > 0
 
 
 def test_time_cost_dense_ep_does_not_reduce_compute_or_dp_cost(tmp_path):
