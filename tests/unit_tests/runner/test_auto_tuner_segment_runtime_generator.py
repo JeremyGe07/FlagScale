@@ -1,7 +1,15 @@
+from pathlib import Path
+import sys
+
 import pytest
 
 from flagscale.runner.auto_tuner.generate import Generator
-from tests.unit_tests.runner.segment_runtime_test_utils import (
+
+TEST_UTILS_DIR = Path(__file__).resolve().parent
+if str(TEST_UTILS_DIR) not in sys.path:
+    sys.path.insert(0, str(TEST_UTILS_DIR))
+
+from segment_runtime_test_utils import (
     segment_runtime_config,
     segment_runtime_strategy,
 )

@@ -1,0 +1,812 @@
+diff --git a/megatron/core/transformer/transformer_block.py b/megatron/core/transformer/transformer_block.py
+old mode 100755
+new mode 100644
+index c14f8ea1f..6b89edec1
+--- a/megatron/core/transformer/transformer_block.py
++++ b/megatron/core/transformer/transformer_block.py
+@@ -1,7 +1,8 @@
+ # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+ import logging
++import os
+ from contextlib import nullcontext
+-from dataclasses import dataclass
++from dataclasses import dataclass, replace
+ from typing import List, Optional, Union
+ 
+ import torch
+@@ -72,8 +73,382 @@ else:
+ logger = logging.getLogger(__name__)
+ 
+ 
++@dataclass(frozen=True)
++class StageShellTransition:
++    source_mesh: dict
++    target_mesh: dict
++    batch_unit: int
++    redistribution_kind: str
++    requires_sequence_parallel: bool
++
++
++class SegmentModuleBlock(torch.nn.Module):
++    def __init__(self, stage_id, segment_index, config, pg_collection, layers):
++        super().__init__()
++        self.stage_id = stage_id
++        self.segment_index = segment_index
++        self.config = config
++        self.pg_collection = pg_collection
++        self.layers = torch.nn.ModuleList(layers)
++        self.layer_number = self.layers[0].layer_number if self.layers else 0
++        self.current_microbatch = getattr(self.layers[0], "current_microbatch", -1)
++
++    def forward(self, hidden_states, attention_mask=None, context=None, **kwargs):
++        use_inner_quantization_context = kwargs.pop("use_inner_quantization_context", False)
++        for layer in self.layers:
++            layer.current_microbatch = self.current_microbatch
++            layer_config = getattr(layer, "config", self.config)
++            if use_inner_quantization_context and layer.layer_number > 0:
++                if layer_config.fp8:
++                    inner_quantization_context = get_fp8_context(
++                        layer_config, layer.layer_number - 1
++                    )
++                elif layer_config.fp4:
++                    inner_quantization_context = get_fp4_context(
++                        layer_config, layer.layer_number - 1
++                    )
++                else:
++                    inner_quantization_context = nullcontext()
++            else:
++                inner_quantization_context = nullcontext()
++
++            with inner_quantization_context:
++                hidden_states, context = layer(
++                    hidden_states=hidden_states,
++                    attention_mask=attention_mask,
++                    context=context,
++                    **kwargs,
++                )
++        return hidden_states, context
++
++
++class SegmentRedistributionBoundary(torch.nn.Module):
++    def __init__(self, stage_id, source_index, target_index, transition, source_pg, target_pg):
++        super().__init__()
++        self.stage_id = stage_id
++        self.source_segment_index = source_index
++        self.target_segment_index = target_index
++        self.layer_number = 0
++        self.source_mesh = dict(transition.source_mesh)
++        self.target_mesh = dict(transition.target_mesh)
++        self.batch_unit = transition.batch_unit
++        self.redistribution_kind = transition.redistribution_kind
++        self.requires_sequence_parallel = transition.requires_sequence_parallel
++        self.source_pg_collection = source_pg
++        self.target_pg_collection = target_pg
++
++    def forward(self, hidden_states, attention_mask=None, context=None, **_kwargs):
++        hidden_states = _redistribute_segment_tensor(
++            hidden_states,
++            self.source_mesh,
++            self.target_mesh,
++            self.source_pg_collection,
++            self.target_pg_collection,
++            self.requires_sequence_parallel,
++        )
++        if torch.is_tensor(context):
++            context = _redistribute_segment_tensor(
++                context,
++                self.source_mesh,
++                self.target_mesh,
++                self.source_pg_collection,
++                self.target_pg_collection,
++                self.requires_sequence_parallel,
++            )
++        return hidden_states, context
++
++    def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
++        return {}
++
++
++def _redistribute_segment_tensor(
++    tensor,
++    source_mesh,
++    target_mesh,
++    source_pg,
++    target_pg,
++    requires_sequence_parallel,
++):
++    if tensor is None or not torch.is_tensor(tensor):
++        return tensor
++    redistributed = tensor
++    if source_mesh["tp"] > 1 and requires_sequence_parallel:
++        redistributed = _gather_tensor_axis(redistributed, source_pg.tp, 0)
++    if source_mesh["dp"] > 1:
++        redistributed = _gather_tensor_axis(redistributed, source_pg.dp, 1)
++    if target_mesh["dp"] > 1:
++        redistributed = _slice_tensor_axis(redistributed, target_pg.dp, 1)
++    if target_mesh["tp"] > 1 and requires_sequence_parallel:
++        redistributed = _slice_tensor_axis(redistributed, target_pg.tp, 0)
++    return redistributed.contiguous()
++
++
++def _gather_tensor_axis(tensor, group, axis):
++    if group is None or group.size() == 1:
++        return tensor
++    gathered = [torch.empty_like(tensor) for _ in range(group.size())]
++    torch.distributed.all_gather(gathered, tensor.contiguous(), group=group)
++    return torch.cat(gathered, dim=axis)
++
++
++def _slice_tensor_axis(tensor, group, axis):
++    if group is None or group.size() == 1:
++        return tensor
++    if tensor.size(axis) % group.size() != 0:
++        raise ValueError(f"segment redistribution axis {axis} is not divisible by group size")
++    shard = tensor.size(axis) // group.size()
++    return tensor.narrow(axis, group.rank() * shard, shard)
++
++
++def _mesh_dict_from_segment(mesh):
++    return {
++        "tp": mesh.tensor_model_parallel_size,
++        "cp": mesh.context_parallel_size,
++        "ep": mesh.expert_model_parallel_size,
++        "dp": mesh.data_parallel_size,
++        "pp": mesh.pp_local,
++    }
++
++
++def _stage_shell_mesh(config):
++    return {
++        "tp": config.tensor_model_parallel_size,
++        "cp": config.context_parallel_size,
++        "ep": config.expert_model_parallel_size,
++        "dp": getattr(config, "data_parallel_size", 1),
++        "pp": 1,
++    }
++
++
++def _same_mesh(source_mesh, target_mesh):
++    return all(source_mesh[key] == target_mesh[key] for key in ("tp", "cp", "ep", "dp", "pp"))
++
++
++def _edge_redistribution_kind(source_mesh, target_mesh):
++    if source_mesh["cp"] != target_mesh["cp"] or source_mesh["ep"] != target_mesh["ep"]:
++        raise ValueError("segment stage-shell boundary only supports tp/dp redistribution")
++    tp_changed = source_mesh["tp"] != target_mesh["tp"]
++    dp_changed = source_mesh["dp"] != target_mesh["dp"]
++    if tp_changed and dp_changed:
++        return "tp-dp"
++    if tp_changed:
++        return "tp-only"
++    if dp_changed:
++        return "dp-only"
++    raise ValueError("segment stage-shell boundary requires a mesh change")
++
++
++def _stage_shell_transition(source_mesh, target_mesh, config):
++    return StageShellTransition(
++        source_mesh=source_mesh,
++        target_mesh=target_mesh,
++        batch_unit=0,
++        redistribution_kind=_edge_redistribution_kind(source_mesh, target_mesh),
++        requires_sequence_parallel=config.sequence_parallel,
++    )
++
++
++def _append_stage_shell_boundary(
++    execution_layers,
++    stage_id,
++    source_index,
++    target_index,
++    source_mesh,
++    target_mesh,
++    source_pg,
++    target_pg,
++    config,
++):
++    if _same_mesh(source_mesh, target_mesh):
++        return
++    execution_layers.append(
++        SegmentRedistributionBoundary(
++            stage_id,
++            source_index,
++            target_index,
++            _stage_shell_transition(source_mesh, target_mesh, config),
++            source_pg,
++            target_pg,
++        )
++    )
++
++
++def _get_segment_stage_spec(config, pp_rank):
++    runtime_spec = getattr(config, "segment_runtime_spec", None)
++    if runtime_spec is None:
++        return None, None
++    stage_id = getattr(config, "segment_stage_id", None)
++    stage_id = pp_rank if stage_id is None else stage_id
++    stages = getattr(runtime_spec, "stages", ())
++    if stage_id < 0 or stage_id >= len(stages):
++        raise ValueError("segment runtime stage id is out of range")
++    return stage_id, stages[stage_id]
++
++
++def _validate_segment_stage_spec(stage_id, stage_spec):
++    meshes = tuple(getattr(stage_spec, "segment_meshes", ()))
++    splits = tuple(getattr(stage_spec, "segment_splits", ()))
++    transitions = tuple(getattr(stage_spec, "transitions", ()))
++    if any(getattr(mesh, "pp_local", None) != 1 for mesh in meshes):
++        raise ValueError("segment runtime requires pp_local=1 for every segment")
++    if len(transitions) != max(0, len(splits) - 1):
++        raise ValueError("segment runtime requires transition metadata for every boundary")
++    for index, transition in enumerate(transitions):
++        if transition.source_stage_id != stage_id or transition.target_stage_id != stage_id:
++            raise ValueError("segment runtime transition stage ids must match current stage")
++        if transition.source_segment_index != index or transition.target_segment_index != index + 1:
++            raise ValueError("segment runtime transition indexes must be contiguous")
++
++
++def _clone_segment_pg_collection(base_pg_collection, stage_id, segment_index, mesh):
++    collection = ProcessGroupCollection()
++    for name in (
++        "pp",
++        "mp",
++        "embd",
++        "pos_embd",
++        "dp_cp",
++        "expt_dp",
++        "intra_dp_cp",
++        "intra_expt_dp",
++        "inter_dist_opt",
++    ):
++        if hasattr(base_pg_collection, name):
++            setattr(collection, name, getattr(base_pg_collection, name))
++    collection.tp = parallel_state.get_segment_process_group(stage_id, segment_index, "tp")
++    collection.dp = parallel_state.get_segment_process_group(stage_id, segment_index, "dp")
++    collection.cp = parallel_state.get_segment_process_group(stage_id, segment_index, "cp")
++    collection.tp_cp = parallel_state.get_segment_process_group(stage_id, segment_index, "tp-cp")
++    collection.tp_dp_cp = parallel_state.get_segment_process_group(
++        stage_id, segment_index, "tp-dp-cp"
++    )
++    if mesh.expert_model_parallel_size > 1:
++        collection.ep = parallel_state.get_segment_process_group(
++            stage_id, segment_index, "ep", True
++        )
++        collection.expt_tp = parallel_state.get_segment_process_group(
++            stage_id, segment_index, "tp", True
++        )
++        collection.tp_ep = parallel_state.get_segment_process_group(
++            stage_id, segment_index, "tp-ep", True
++        )
++        collection.tp_ep_pp = parallel_state.get_segment_process_group(
++            stage_id, segment_index, "tp-ep-pp", True
++        )
++    return collection
++
++
++def _segment_layer_config(base_config, stage_id, mesh):
++    config = replace(
++        base_config,
++        tensor_model_parallel_size=mesh.tensor_model_parallel_size,
++        context_parallel_size=mesh.context_parallel_size,
++        expert_model_parallel_size=mesh.expert_model_parallel_size,
++        sequence_parallel=base_config.sequence_parallel
++        and mesh.tensor_model_parallel_size > 1,
++        segment_stage_id=stage_id,
++    )
++    config.data_parallel_size = mesh.data_parallel_size
++    return config
++
++
++def _build_segment_execution_layers(
++    build_layer,
++    layer_specs,
++    base_config,
++    stage_id,
++    stage_spec,
++    base_pg_collection,
++):
++    expected_layers = sum(stage_spec.segment_splits)
++    if expected_layers != len(layer_specs):
++        raise ValueError("segment runtime splits must match the stage layer specs")
++    execution_layers = []
++    spec_index = 0
++    stage_shell_mesh = _stage_shell_mesh(base_config)
++    last_segment_pg_collection = None
++    last_segment_mesh = None
++    for segment_index, segment_layers in enumerate(stage_spec.segment_splits):
++        mesh = stage_spec.segment_meshes[segment_index]
++        segment_mesh = _mesh_dict_from_segment(mesh)
++        segment_config = _segment_layer_config(base_config, stage_id, mesh)
++        segment_pg_collection = _clone_segment_pg_collection(
++            base_pg_collection,
++            stage_id,
++            segment_index,
++            mesh,
++        )
++        if segment_index == 0:
++            _append_stage_shell_boundary(
++                execution_layers,
++                stage_id,
++                -1,
++                segment_index,
++                stage_shell_mesh,
++                segment_mesh,
++                base_pg_collection,
++                segment_pg_collection,
++                base_config,
++            )
++        segment_modules = []
++        for _ in range(segment_layers):
++            segment_modules.append(
++                build_layer(
++                    layer_specs[spec_index],
++                    spec_index + 1,
++                    segment_config,
++                    segment_pg_collection,
++                )
++            )
++            spec_index += 1
++        execution_layers.append(
++            SegmentModuleBlock(
++                stage_id,
++                segment_index,
++                segment_config,
++                segment_pg_collection,
++                segment_modules,
++            )
++        )
++        if segment_index < len(stage_spec.segment_splits) - 1:
++            transition = stage_spec.transitions[segment_index]
++            next_pg_collection = _clone_segment_pg_collection(
++                base_pg_collection,
++                stage_id,
++                segment_index + 1,
++                stage_spec.segment_meshes[segment_index + 1],
++            )
++            execution_layers.append(
++                SegmentRedistributionBoundary(
++                    stage_id,
++                    segment_index,
++                    segment_index + 1,
++                    transition,
++                    segment_pg_collection,
++                    next_pg_collection,
++                )
++            )
++        last_segment_pg_collection = segment_pg_collection
++        last_segment_mesh = segment_mesh
++    _append_stage_shell_boundary(
++        execution_layers,
++        stage_id,
++        len(stage_spec.segment_splits) - 1,
++        len(stage_spec.segment_splits),
++        last_segment_mesh,
++        stage_shell_mesh,
++        last_segment_pg_collection,
++        base_pg_collection,
++        base_config,
++    )
++    return torch.nn.ModuleList(execution_layers)
++
++
+ def get_num_layers_to_build(
+-    config: TransformerConfig, vp_stage: Optional[int] = None, pp_rank: Optional[int] = None
++    config: TransformerConfig,
++    vp_stage: Optional[int] = None,
++    pp_rank: Optional[int] = None,
++    is_dualpipev_first_chunk: Optional[bool] = False,
+ ) -> int:
+     """
+     Determine the number of transformer layers to build for the current pipeline stage.
+@@ -81,6 +456,7 @@ def get_num_layers_to_build(
+         config (TransformerConfig): Configuration object containing transformer model parameters.
+         vp_stage (Optional[int]): Virtual pipeline stage number.
+         pp_rank (Optional[int]): Pipeline parallel rank.
++        is_dualpipev_first_chunk(Optional[bool]): Is dualpipev first model chunk or not
+ 
+     Returns:
+         int: The number of layers to be built for the current pipeline stage.
+@@ -96,6 +472,11 @@ def get_num_layers_to_build(
+     if pp_rank is None:
+         pp_rank = parallel_state.get_pipeline_model_parallel_rank()
+ 
++    stage_id, segment_stage_spec = _get_segment_stage_spec(config, pp_rank)
++    if segment_stage_spec is not None:
++        _validate_segment_stage_spec(stage_id, segment_stage_spec)
++        return sum(segment_stage_spec.segment_splits)
++
+     is_first_pp_stage = pp_rank == 0
+     is_last_pp_stage = pp_rank == config.pipeline_model_parallel_size - 1
+ 
+@@ -143,7 +524,7 @@ def get_num_layers_to_build(
+ 
+         if is_last_pp_stage and config.num_layers_in_last_pipeline_stage is not None:
+             num_layers_per_pipeline_rank = config.num_layers_in_last_pipeline_stage
+-    else:
++    elif not config.enable_hetero:
+         # Include the embedding layer and loss layer into pipeline parallelism partition
+         num_layers = config.num_layers
+         if config.account_for_embedding_in_pipeline_split:
+@@ -158,7 +539,7 @@ def get_num_layers_to_build(
+         num_layers_per_pipeline_rank = num_layers // config.pipeline_model_parallel_size
+ 
+     vp_size = config.virtual_pipeline_model_parallel_size
+-    if vp_size is not None and config.pipeline_model_parallel_size > 1:
++    if vp_size is not None and config.pipeline_model_parallel_size > 1 and parallel_state.get_virtual_pipeline_model_parallel_world_size() > 1:
+         # Interleaved pipeline parallelism:
+         # Number of layers in each model chunk is the number of layers in the stage,
+         # divided by the number of model chunks in a stage.
+@@ -178,11 +559,26 @@ def get_num_layers_to_build(
+         num_layers_per_virtual_stage = num_layers_per_pipeline_rank // vp_size
+ 
+         num_layers_to_build = num_layers_per_virtual_stage
+-
++    ######### FlagScale Begin ########
++    elif config.use_dualpipev:
++        num_layers_per_pipeline_rank_first_chunk = num_layers_per_pipeline_rank // 2
++        if num_layers_per_pipeline_rank % 2 != 0:
++            num_layers_per_pipeline_rank_first_chunk = num_layers_per_pipeline_rank_first_chunk + 1
++        num_layers_per_pipeline_rank_second_chunk = num_layers_per_pipeline_rank - num_layers_per_pipeline_rank_first_chunk
++        if is_dualpipev_first_chunk:
++            num_layers_to_build = num_layers_per_pipeline_rank_first_chunk
++        else:
++            num_layers_to_build = num_layers_per_pipeline_rank_second_chunk
++    ######### FlagScale End ########
+     else:
+         # Non-interleaved pipeline parallelism:
+         # Each stage gets a contiguous set of layers.
+-        num_layers_to_build = num_layers_per_pipeline_rank
++
++        if config.enable_hetero:
++            pipeline_rank = parallel_state.get_pipeline_model_parallel_rank()
++            num_layers_to_build = config.hetero_pipeline_layer_split[pipeline_rank]
++        else:
++            num_layers_to_build = num_layers_per_pipeline_rank
+ 
+     # The embedding (or loss) layer cannot function as a standalone transformer layer
+     # Reduce the number of layers to construct by 1 on the first (or last) stage if the
+@@ -322,7 +718,11 @@ class TransformerBlock(MegatronModule):
+             self.config._cpu_offloading_context = None
+ 
+         self._build_layers()
+-        self.num_layers_per_pipeline_rank = len(self.layers)
++        self.num_layers_per_pipeline_rank = get_num_layers_to_build(
++            self.config,
++            self.vp_stage,
++            get_pg_rank(self.pg_collection.pp),
++        )
+ 
+     def _build_layers(self):
+         # Transformer layers.
+@@ -331,14 +731,17 @@ class TransformerBlock(MegatronModule):
+         # if self.apply_query_key_layer_scaling:
+         #     coeff = self.layer_number
+         #     self.norm_factor *= coeff
+-        def build_layer(layer_spec, layer_number):
++        def build_layer(layer_spec, layer_number, layer_config=None, pg_collection=None):
+             global_layer_number = layer_number + get_transformer_layer_offset(
+                 self.config, self.vp_stage, get_pg_rank(self.pg_collection.pp)
+             )  # 1-based index
+-            if self.config.heterogeneous_block_specs:
+-                layer_config = self.config.get_config_for_layer(global_layer_number)
+-            else:
+-                layer_config = self.config
++            if layer_config is None:
++                if self.config.heterogeneous_block_specs:
++                    layer_config = self.config.get_config_for_layer(global_layer_number)
++                else:
++                    layer_config = self.config
++            if pg_collection is None:
++                pg_collection = self.pg_collection
+ 
+             # Get appropriate quantization context (FP8 and FP4 are mutually exclusive)
+             if layer_config.fp8:
+@@ -357,18 +760,32 @@ class TransformerBlock(MegatronModule):
+                     layer_spec,
+                     config=layer_config,
+                     layer_number=layer_number,
+-                    pg_collection=self.pg_collection,
++                    pg_collection=pg_collection,
+                     vp_stage=self.vp_stage,
+                 )
+             return module
+ 
+-        # offset is implicit in TransformerLayer
+-        self.layers = torch.nn.ModuleList(
+-            [
+-                build_layer(layer_spec, i + 1)
+-                for i, layer_spec in enumerate(self.submodules.layer_specs)
+-            ]
++        stage_id, segment_stage_spec = _get_segment_stage_spec(
++            self.config,
++            get_pg_rank(self.pg_collection.pp),
+         )
++        if segment_stage_spec is None:
++            self.layers = torch.nn.ModuleList(
++                [
++                    build_layer(layer_spec, i + 1)
++                    for i, layer_spec in enumerate(self.submodules.layer_specs)
++                ]
++            )
++        else:
++            _validate_segment_stage_spec(stage_id, segment_stage_spec)
++            self.layers = _build_segment_execution_layers(
++                build_layer,
++                self.submodules.layer_specs,
++                self.config,
++                stage_id,
++                segment_stage_spec,
++                self.pg_collection,
++            )
+ 
+         # @TODO: add back account_for_embedding_in_pipeline_split (see issue #293)
+         # In pipeline parallelism, we want to add this LN only to the last stage of the pipeline
+@@ -386,6 +803,9 @@ class TransformerBlock(MegatronModule):
+     def _get_layer(self, layer_number: int):
+         return self.layers[layer_number]
+ 
++    def _execution_layer_count(self) -> int:
++        return len(self.layers)
++
+     def _checkpointed_forward(
+         self,
+         hidden_states: Tensor,
+@@ -393,21 +813,47 @@ class TransformerBlock(MegatronModule):
+         context: Tensor,
+         context_mask: Tensor,
+         rotary_pos_emb: Tensor,
+-        attention_bias: Tensor,
+-        packed_seq_params: PackedSeqParams,
+-        use_inner_quantization_context: bool,
++        rotary_pos_cos: Optional[Tensor] = None,
++        rotary_pos_sin: Optional[Tensor] = None,
++        attention_bias: Tensor = None,
++        packed_seq_params: PackedSeqParams = None,
++        sequence_len_offset: Optional[Tensor] = None,
++        use_inner_quantization_context: bool = False,
+     ):
+         """Forward method with activation checkpointing."""
+ 
+         def custom(start: int, end: int):
+             def custom_forward(
+-                hidden_states, attention_mask, context, context_mask, rotary_pos_emb
++                hidden_states,
++                attention_mask,
++                context,
++                context_mask,
++                rotary_pos_emb,
++                rotary_pos_cos,
++                rotary_pos_sin,
++                sequence_len_offset,
+             ):
+                 for index in range(start, end):
+                     layer = self._get_layer(index)
++                    if isinstance(layer, SegmentModuleBlock):
++                        hidden_states, context = layer(
++                            hidden_states=hidden_states,
++                            attention_mask=attention_mask,
++                            context=context,
++                            context_mask=context_mask,
++                            rotary_pos_emb=rotary_pos_emb,
++                            rotary_pos_cos=rotary_pos_cos,
++                            rotary_pos_sin=rotary_pos_sin,
++                            attention_bias=attention_bias,
++                            inference_context=None,
++                            packed_seq_params=packed_seq_params,
++                            sequence_len_offset=sequence_len_offset,
++                            use_inner_quantization_context=use_inner_quantization_context,
++                        )
++                        continue
+ 
+                     # Get appropriate inner quantization context
+-                    if use_inner_quantization_context:
++                    if use_inner_quantization_context and layer.layer_number > 0:
+                         if self.config.fp8:
+                             inner_quantization_context = get_fp8_context(
+                                 self.config, layer.layer_number - 1
+@@ -429,9 +875,12 @@ class TransformerBlock(MegatronModule):
+                             context=context,
+                             context_mask=context_mask,
+                             rotary_pos_emb=rotary_pos_emb,
++                            rotary_pos_cos=rotary_pos_cos,
++                            rotary_pos_sin=rotary_pos_sin,
+                             attention_bias=attention_bias,
+                             inference_context=None,
+                             packed_seq_params=packed_seq_params,
++                            sequence_len_offset=sequence_len_offset,
+                         )
+                 return hidden_states, context
+ 
+@@ -451,6 +900,9 @@ class TransformerBlock(MegatronModule):
+                     context,
+                     context_mask,
+                     rotary_pos_emb,
++                    rotary_pos_cos,
++                    rotary_pos_sin,
++                    sequence_len_offset,
+                 )
+             else:
+                 return tensor_parallel.checkpoint(
+@@ -461,14 +913,18 @@ class TransformerBlock(MegatronModule):
+                     context,
+                     context_mask,
+                     rotary_pos_emb,
++                    rotary_pos_cos,
++                    rotary_pos_sin,
++                    sequence_len_offset,
+                 )
+ 
++        execution_layer_count = self._execution_layer_count()
+         if self.config.recompute_method == 'uniform':
+             # Uniformly divide the total number of Transformer layers and checkpoint
+             # the input activation of each divided chunk.
+             # A method to further reduce memory usage reducing checkpoints.
+             layer_idx = 0
+-            while layer_idx < self.num_layers_per_pipeline_rank:
++            while layer_idx < execution_layer_count:
+                 hidden_states, context = checkpoint_handler(
+                     custom(layer_idx, layer_idx + self.config.recompute_num_layers)
+                 )
+@@ -480,7 +936,7 @@ class TransformerBlock(MegatronModule):
+             # Transformer layers and skip the rest.
+             # A method fully use the device memory removing redundant re-computation.
+             recompute_skip_num_layers = 0
+-            for layer_idx in range(self.num_layers_per_pipeline_rank):
++            for layer_idx in range(execution_layer_count):
+                 # Skip recomputation when input grad computation is not needed.
+                 # Need to have at least one input tensor with gradient computation
+                 # for re-enterant autograd engine.
+@@ -556,6 +1012,14 @@ class TransformerBlock(MegatronModule):
+             [s, b, h], and optionally the updated context tensor if cross-attention is used.
+         """
+ 
++        ########## FlagScale Begin ##########
++        # for refined recompute
++        self.current_microbatch = -1
++        if len(self.layers) > 0: # some pp-stage has no layers in pipeline_model_parallel_layout,such as embedding stage
++            if hasattr(self.layers[0], 'current_microbatch'):
++                self.current_microbatch = self.layers[0].current_microbatch
++        ########## FlagScale End ##########
++
+         inference_context = deprecate_inference_params(inference_context, inference_params)
+ 
+         # Delete the obsolete reference to the initial input tensor if necessary
+@@ -609,6 +1073,71 @@ class TransformerBlock(MegatronModule):
+             use_outer_quantization_context = False
+             use_inner_quantization_context = False
+             outer_quantization_context = nullcontext()
++        ########## FlagScale Begin ##########
++        if self.config.recompute_method_per_stage_micro_batch != None:
++            if self.config.virtual_pipeline_model_parallel_size != None:
++                if (
++                    self.config.recompute_method_per_stage_micro_batch[
++                        parallel_state.get_virtual_pipeline_model_parallel_rank()
++                        * self.config.pipeline_model_parallel_size
++                        + parallel_state.get_pipeline_model_parallel_rank()
++                    ][self.current_microbatch]
++                    == 0
++                ):
++                    self.config.recompute_method = 'uniform'
++                elif (
++                    self.config.recompute_method_per_stage_micro_batch[
++                        parallel_state.get_virtual_pipeline_model_parallel_rank()
++                        * self.config.pipeline_model_parallel_size
++                        + parallel_state.get_pipeline_model_parallel_rank()
++                    ][self.current_microbatch]
++                    == 1
++                ):
++                    self.config.recompute_method = 'block'
++                else:
++                    raise ValueError("the item of recompute_method_per_stage_micor_batch must be '0' or '1' ")
++            else:
++                if (
++                    self.config.recompute_method_per_stage_micro_batch[
++                        parallel_state.get_pipeline_model_parallel_rank()
++                    ][self.current_microbatch]
++                    == 0
++                ):
++                    self.config.recompute_method = 'uniform'
++                elif (
++                    self.config.recompute_method_per_stage_micro_batch[
++                        parallel_state.get_pipeline_model_parallel_rank()
++                    ][self.current_microbatch]
++                    == 1
++                ):
++                    self.config.recompute_method = 'block'
++                else:
++                    raise ValueError("the item of recompute_method_per_stage_micor_batch must be '0' or '1' ")
++            ########## FlagScale End ##########
++        if self.config.recompute_num_layers_per_stage_micro_batch != None:
++            if self.config.virtual_pipeline_model_parallel_size != None:
++                self.config.recompute_num_layers = self.config.recompute_num_layers_per_stage_micro_batch[
++                    parallel_state.get_virtual_pipeline_model_parallel_rank()
++                    * self.config.pipeline_model_parallel_size
++                    + parallel_state.get_pipeline_model_parallel_rank()
++                ][self.current_microbatch]
++            else:
++                self.config.recompute_num_layers = self.config.recompute_num_layers_per_stage_micro_batch[
++                    parallel_state.get_pipeline_model_parallel_rank()
++                ][self.current_microbatch]
++            if self.config.recompute_num_layers == 0:
++                self.config.recompute_method = None
++                self.config.recompute_granularity = None
++
++        if (
++            self.config.recompute_granularity_per_stage_micro_batch != None
++            and self.config.recompute_granularity_per_stage_micro_batch[
++                parallel_state.get_pipeline_model_parallel_rank()
++            ][self.current_microbatch]
++            == 0
++        ):
++            self.config.recompute_granularity = None
++            self.config.recompute_method = None
+ 
+         with rng_context, outer_quantization_context:
+             # Forward pass.
+@@ -619,12 +1148,32 @@ class TransformerBlock(MegatronModule):
+                     context=context,
+                     context_mask=context_mask,
+                     rotary_pos_emb=rotary_pos_emb,
++                    rotary_pos_cos=rotary_pos_cos,
++                    rotary_pos_sin=rotary_pos_sin,
+                     attention_bias=attention_bias,
+                     packed_seq_params=packed_seq_params,
++                    sequence_len_offset=sequence_len_offset,
+                     use_inner_quantization_context=use_inner_quantization_context,
+                 )
+             else:
+                 for l_no, layer in enumerate(self.layers):
++                    if isinstance(layer, SegmentModuleBlock):
++                        with self.offload_context:
++                            hidden_states, context = layer(
++                                hidden_states=hidden_states,
++                                attention_mask=attention_mask,
++                                context=context,
++                                context_mask=context_mask,
++                                rotary_pos_emb=rotary_pos_emb,
++                                rotary_pos_cos=rotary_pos_cos,
++                                rotary_pos_sin=rotary_pos_sin,
++                                attention_bias=attention_bias,
++                                inference_context=inference_context,
++                                packed_seq_params=packed_seq_params,
++                                sequence_len_offset=sequence_len_offset,
++                                use_inner_quantization_context=use_inner_quantization_context,
++                            )
++                        continue
+                     # Get appropriate inner quantization context
+                     if use_inner_quantization_context:
+                         if self.config.fp8:
+@@ -710,6 +1259,16 @@ class TransformerBlock(MegatronModule):
+         elif isinstance(self.config.moe_layer_freq, list):
+             non_homogeneous_layers = True
+ 
++
++        # TODO: @aoyulong - This is a temporary solution to support single-file-per-tensor ckpt
++        non_homogeneous_layers_env = os.getenv('FS_NON_HOMOGENEOUS_LAYERS', 'False').lower() in (
++            'true',
++            '1',
++            't',
++        )
++        if non_homogeneous_layers_env:
++            non_homogeneous_layers = True
++
+         if self.config.heterogeneous_block_specs:
+             non_homogeneous_layers = True
+ 
+@@ -727,7 +1286,16 @@ class TransformerBlock(MegatronModule):
+ 
+         layer_prefix = f'{prefix}layers.'
+         num_layers = self.config.num_layers
++        execution_layers = []
+         for layer in self.layers:
++            if isinstance(layer, SegmentModuleBlock):
++                execution_layers.extend(layer.layers)
++                continue
++            if isinstance(layer, SegmentRedistributionBoundary):
++                continue
++            execution_layers.append(layer)
++
++        for layer in execution_layers:
+             offset = get_transformer_layer_offset(
+                 self.config, self.vp_stage, get_pg_rank(self.pg_collection.pp)
+             )

@@ -1,3 +1,6 @@
+from pathlib import Path
+import sys
+
 import pytest
 
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
@@ -12,7 +15,12 @@ from flagscale.runner.auto_tuner.plan.schema import (
 from flagscale.runner.auto_tuner.plan.segment_runtime_contract import (
     build_segment_runtime_contract,
 )
-from tests.unit_tests.runner.segment_runtime_test_utils import (
+
+TEST_UTILS_DIR = Path(__file__).resolve().parent
+if str(TEST_UTILS_DIR) not in sys.path:
+    sys.path.insert(0, str(TEST_UTILS_DIR))
+
+from segment_runtime_test_utils import (
     segment_runtime_config,
     segment_runtime_strategy,
 )

@@ -1,0 +1,50 @@
+diff --git a/gpt_builders.py b/gpt_builders.py
+index 89b228815..6cba3cf65 100644
+--- a/gpt_builders.py
++++ b/gpt_builders.py
+@@ -1,5 +1,6 @@
+ # Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+ 
++from megatron.core import parallel_state
+ from megatron.core.models.gpt import GPTModel
+ from megatron.core.models.gpt.gpt_layer_specs import (
+     get_gpt_decoder_block_spec,
+@@ -20,13 +21,37 @@ import megatron.legacy.model  # isort: skip
+ # NOTE: Loading `megatron.legacy.model` earlier fails due to circular import
+ 
+ 
++def _apply_segment_runtime_config(args, config):
++    runtime_spec = getattr(args, "segment_runtime_spec", None)
++    if runtime_spec is None:
++        from flagscale.train.global_vars import get_parallel_context
++
++        para_ctx = get_parallel_context()
++        if para_ctx is not None and para_ctx.has_segment_runtime():
++            runtime_spec = para_ctx.get_segment_runtime_spec()
++
++    if runtime_spec is not None:
++        config.segment_runtime_spec = runtime_spec
++        config.segment_stage_id = parallel_state.get_pipeline_model_parallel_rank()
++
++
+ def gpt_builder(args, pre_process, post_process, vp_stage=None, config=None):
+     print_rank_0('building GPT model ...')
+     if config is None:
+         if args.yaml_cfg is not None:
+             config = core_transformer_config_from_yaml(args, "language_model")
+         else:
+-            config = core_transformer_config_from_args(args)
++            from flagscale.train.global_vars import get_parallel_context
++
++            para_ctx = get_parallel_context()
++            if para_ctx is not None:
++                config = para_ctx.get_transformer_config()
++
++            if config is None:
++                config = core_transformer_config_from_args(args)
++
++    _apply_segment_runtime_config(args, config)
++
+     if args.use_legacy_models:
+         model = megatron.legacy.model.GPTModel(
+             config,

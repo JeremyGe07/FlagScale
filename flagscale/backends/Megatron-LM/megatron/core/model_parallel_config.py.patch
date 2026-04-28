@@ -1,11 +1,11 @@
 diff --git a/megatron/core/model_parallel_config.py b/megatron/core/model_parallel_config.py
-index 9f5018c26..17b6c0892 100644
+index 9f5018c26..0dc3ce655 100644
 --- a/megatron/core/model_parallel_config.py
 +++ b/megatron/core/model_parallel_config.py
 @@ -58,6 +58,12 @@ class ModelParallelConfig:
      expert_tensor_parallel_size: Optional[int] = None
      """Intra-layer tensor model parallelsm for expert layer. Splits tensors across GPU ranks."""
-
+ 
 +    segment_runtime_spec: object = None
 +    """Parsed segment runtime contract for one stage-executable model build."""
 +
@@ -18,7 +18,7 @@ index 9f5018c26..17b6c0892 100644
 @@ -349,6 +355,16 @@ class ModelParallelConfig:
         the user adds a level 1 timer that is not called by all ranks.
      """
-
+ 
 +    ###################
 +    # Heterogeneous Training
 +    ###################

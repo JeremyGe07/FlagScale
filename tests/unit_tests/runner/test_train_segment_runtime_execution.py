@@ -258,6 +258,7 @@ def test_transformer_block_inserts_segment_redistribution_boundaries(monkeypatch
         "SegmentModuleBlock",
         "SegmentRedistributionBoundary",
         "SegmentModuleBlock",
+        "SegmentRedistributionBoundary",
     ]
 
 
@@ -286,6 +287,7 @@ def test_transformer_block_materializes_segment_blocks_with_local_configs(monkey
         "SegmentModuleBlock",
         "SegmentRedistributionBoundary",
         "SegmentModuleBlock",
+        "SegmentRedistributionBoundary",
     ]
     assert block.layers[0].config.tensor_model_parallel_size == 2
     assert block.layers[0].config.data_parallel_size == 1
