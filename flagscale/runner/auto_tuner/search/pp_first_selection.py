@@ -1,4 +1,5 @@
 from collections import Counter
+from collections.abc import Mapping
 
 from flagscale.runner.auto_tuner.chip_profile import get_attached_chip_profile
 from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
@@ -30,6 +31,10 @@ RUNTIME_STRATEGY_KEYS = (
     "recompute_method",
     "recompute_granularity",
     "recompute_num_layers",
+)
+SEGMENT_RUNTIME_KEYS = (
+    "segment_partition_ranges",
+    "segment_strategies",
 )
 
 
@@ -157,7 +162,9 @@ def _has_runtime_identity(strategy):
 def _hashable_value(value):
     if isinstance(value, list):
         return tuple(_hashable_value(item) for item in value)
-    if isinstance(value, dict):
+    if isinstance(value, tuple):
+        return tuple(_hashable_value(item) for item in value)
+    if isinstance(value, Mapping):
         return tuple(sorted((key, _hashable_value(item)) for key, item in value.items()))
     return value
 
@@ -167,6 +174,10 @@ def _stage_runtime_signature(stage_strategies):
         tuple(
             (field, _hashable_value(stage.get(field)))
             for field in RUNTIME_STRATEGY_KEYS
+        ) + tuple(
+            (field, _hashable_value(stage.get(field)))
+            for field in SEGMENT_RUNTIME_KEYS
+            if field in stage
         )
         for stage in stage_strategies
     )

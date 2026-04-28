@@ -2,6 +2,10 @@ import copy
 from types import SimpleNamespace
 
 from flagscale.runner.auto_tuner.search.pp_first_dp_solver import solve_stage_level_dp
+from flagscale.runner.auto_tuner.search.pp_first_segment_assignment import (
+    SEGMENT_DP_ASSIGNMENT_SOLVER,
+    generate_segment_dp_assignment_candidates,
+)
 from flagscale.runner.auto_tuner.search.pp_first_stage_candidates import (
     build_stage_candidates,
 )
@@ -31,6 +35,15 @@ def generate_assignment_candidates(
     solver = _resolve_assignment_solver(planner_cfg)
     if solver == DP_ASSIGNMENT_SOLVER:
         return _generate_dp_assignment_candidates(
+            searcher=searcher,
+            space=space,
+            config=config,
+            partition=partition,
+            max_assignments=max_assignments,
+            planner_cfg=planner_cfg,
+        )
+    if solver == SEGMENT_DP_ASSIGNMENT_SOLVER:
+        return generate_segment_dp_assignment_candidates(
             searcher=searcher,
             space=space,
             config=config,
@@ -192,7 +205,7 @@ def _sort_value(value):
         return tuple(_sort_value(item) for item in value)
     if isinstance(value, dict):
         return tuple(sorted((key, _sort_value(item)) for key, item in value.items()))
-    return value
+    return (type(value).__name__, repr(value))
 
 
 def _materialize_dp_assignment_candidate(partition, chain):

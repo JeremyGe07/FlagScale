@@ -231,3 +231,61 @@ def test_build_short_run_shortlist_keeps_dp_stage_heterogeneous_plans_distinct()
 
     assert [strategy["name"] for strategy in shortlist] == ["dp-chain-a", "dp-chain-b"]
     assert _runtime_execution_key(shortlist[0]) != _runtime_execution_key(shortlist[1])
+
+
+def test_build_short_run_shortlist_hashes_segment_stage_runtime_signatures():
+    config = _config()
+    config.experiment.auto_tuner.planner.topk_plans_for_short_run = 2
+    base_stage = {
+        "data_parallel_size": 2,
+        "tensor_model_parallel_size": 1,
+        "pipeline_model_parallel_size": 2,
+        "context_parallel_size": 1,
+        "expert_model_parallel_size": 1,
+        "use_distributed_optimizer": False,
+        "sequence_parallel": True,
+        "acc_step": 2,
+        "micro_batch_size": 2,
+        "num_layers_per_virtual_pipeline_stage": None,
+        "use_recompute": False,
+        "recompute_method": None,
+        "recompute_granularity": None,
+        "recompute_num_layers": None,
+        "decoder_first_pipeline_num_layers": 5,
+        "decoder_last_pipeline_num_layers": 5,
+    }
+    segment_stage = {
+        **base_stage,
+        "segment_partition_ranges": [[0, 1], [2, 4]],
+        "segment_strategies": (
+            {**base_stage, "tensor_model_parallel_size": 1, "data_parallel_size": 2},
+            {**base_stage, "tensor_model_parallel_size": 2, "data_parallel_size": 1},
+        ),
+    }
+    strategies = [
+        {
+            "name": "segment-chain-a",
+            "time_cost": 1.0,
+            **base_stage,
+            "stage_strategies": (segment_stage, segment_stage),
+            "runtime_executable": True,
+        },
+        {
+            "name": "segment-chain-b",
+            "time_cost": 2.0,
+            **base_stage,
+            "stage_strategies": (
+                segment_stage,
+                {**segment_stage, "segment_partition_ranges": [[0, 2], [3, 4]]},
+            ),
+            "runtime_executable": True,
+        },
+    ]
+
+    shortlist = build_short_run_shortlist(strategies, config)
+
+    assert [strategy["name"] for strategy in shortlist] == [
+        "segment-chain-a",
+        "segment-chain-b",
+    ]
+    assert _runtime_execution_key(shortlist[0]) != _runtime_execution_key(shortlist[1])

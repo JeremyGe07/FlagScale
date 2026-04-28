@@ -168,6 +168,32 @@ def test_stage_level_dp_solver_keeps_same_named_candidates_separate():
     assert [chain.stage_cost_breakdown[0]["stage_time_cost"] for chain in chains] == [5, 7]
 
 
+def test_stage_level_dp_solver_sorts_mixed_none_and_string_metadata():
+    stage_candidates = [
+        [
+            _stage_candidate_with_cost(
+                stage_time_cost=1,
+                dp=1,
+                tp=1,
+                recompute_method=None,
+            ),
+            _stage_candidate_with_cost(
+                stage_time_cost=1,
+                dp=1,
+                tp=1,
+                recompute_method="block",
+            ),
+        ],
+        [
+            _stage_candidate_with_cost(stage_time_cost=1, dp=1, tp=1),
+        ],
+    ]
+
+    chains = solve_stage_level_dp(stage_candidates, lambda previous, current: 0.0, max_results=2)
+
+    assert len(chains) == 2
+
+
 def test_stage_level_dp_solver_uses_boundary_aware_transition_mapping():
     stage_candidates = [
         [

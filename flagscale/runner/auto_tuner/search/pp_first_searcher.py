@@ -159,6 +159,12 @@ def _planner_budget(config, topk):
         "max_dp_results_per_partition": planner_cfg.get(
             "max_dp_results_per_partition"
         ),
+        "max_segment_splits_per_stage": planner_cfg.get(
+            "max_segment_splits_per_stage"
+        ),
+        "max_segment_candidates_per_stage": planner_cfg.get(
+            "max_segment_candidates_per_stage"
+        ),
         "topk_plans_for_short_run": topk,
     }
 

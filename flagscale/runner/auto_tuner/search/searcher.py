@@ -13,7 +13,6 @@ from flagscale.runner.auto_tuner.cost.memory_cost import estimate_memory_cost
 from flagscale.runner.auto_tuner.cost.time_cost import estimate_time_cost
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan, summarize_plan
 from flagscale.runner.auto_tuner.plan.summary import (
-    is_runtime_executable_plan,
     plan_kind,
     segment_count,
     summarize_execution_contract,
@@ -103,6 +102,10 @@ def get_first_last_num_layers_for_pp(num_layers, pp_size):
     last_num_layers = remaining_layers - first_num_layers
 
     return first_num_layers, last_num_layers
+
+
+def _is_executable_runtime_mode(runtime_mode):
+    return runtime_mode in {"stage-executable", "segment-executable"}
 
 
 class Searcher:
@@ -410,7 +413,9 @@ class Searcher:
             strategy["segment_count"] = segment_count(plan)
             strategy["execution_contract"] = summarize_execution_contract(plan)
             strategy["runtime_mode"] = validation.runtime_mode
-            strategy["runtime_executable"] = is_runtime_executable_plan(plan)
+            strategy["runtime_executable"] = _is_executable_runtime_mode(
+                validation.runtime_mode
+            )
 
     def _product_parallel_dims(self, space, config):
         # Avoid space explosion after product

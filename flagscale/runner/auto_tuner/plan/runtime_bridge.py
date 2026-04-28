@@ -14,6 +14,10 @@ from flagscale.runner.auto_tuner.plan.summary import (
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
+def _is_executable_runtime_mode(runtime_mode):
+    return runtime_mode in {"stage-executable", "segment-executable"}
+
+
 def apply_hetero_runtime_overrides(strategy, config, runtime_mode):
     if runtime_mode == "stage-executable":
         overrides = build_stage_hetero_runtime_overrides(strategy, config)
@@ -89,7 +93,7 @@ def _build_plan_metadata(strategy, config):
         "stage_count": len(plan.stages),
         "segment_count": segment_count(plan),
         "runtime_mode": validation.runtime_mode,
-        "runtime_executable": validation.runtime_mode == "stage-executable",
+        "runtime_executable": _is_executable_runtime_mode(validation.runtime_mode),
         "execution_contract": summarize_execution_contract(plan),
         "plan_summary": summarize_plan(plan),
     }

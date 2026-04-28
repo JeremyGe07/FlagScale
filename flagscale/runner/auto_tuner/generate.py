@@ -12,6 +12,10 @@ from flagscale.runner.auto_tuner.plan.summary import plan_kind, segment_count, s
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
 
 
+def _is_executable_runtime_mode(runtime_mode):
+    return runtime_mode in {"stage-executable", "segment-executable"}
+
+
 class Generator:
     _PLAN_STRATEGY_KEYS = (
         "data_parallel_size",
@@ -110,7 +114,7 @@ class Generator:
             "stage_count": len(plan.stages),
             "segment_count": segment_count(plan),
             "runtime_mode": validation.runtime_mode,
-            "runtime_executable": validation.runtime_mode == "stage-executable",
+            "runtime_executable": _is_executable_runtime_mode(validation.runtime_mode),
             "execution_contract": summarize_execution_contract(plan),
             "plan_summary": summarize_plan(plan),
         }

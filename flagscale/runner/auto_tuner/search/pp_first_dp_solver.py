@@ -269,7 +269,7 @@ def _sort_value(value):
         return tuple(_sort_value(item) for item in value)
     if isinstance(value, set):
         return tuple(sorted((_sort_value(item) for item in value), key=repr))
-    return value
+    return (type(value).__name__, repr(value))
 
 
 def _freeze_tuple(values):

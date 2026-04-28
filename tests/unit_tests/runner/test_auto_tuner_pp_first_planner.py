@@ -291,6 +291,34 @@ def test_pp_first_searcher_dp_path_attaches_stage_metadata(tmp_path):
     assert len(strategy["stage_device_groups"]) == len(strategy["stage_strategies"])
 
 
+def test_pp_first_searcher_routes_to_segment_dp_assignment_solver(tmp_path):
+    config = _config(tmp_path, pps=[2])
+    config.experiment.auto_tuner.planner = {
+        "name": "pp_first",
+        "assignment_solver": "segment_dp",
+        "max_pp_candidates": 1,
+        "max_partitions_per_pp": 1,
+        "max_assignments_per_partition": 2,
+        "max_stage_candidates_per_stage": 100,
+        "max_segment_splits_per_stage": 1,
+        "max_segment_candidates_per_stage": 4,
+        "max_dp_results_per_partition": 2,
+        "topk_plans_for_short_run": 2,
+    }
+
+    searcher = PPFirstSearcher(config)
+
+    assert searcher.strategies
+    assert len(searcher.short_run_strategies) == 2
+    assert {strategy["runtime_mode"] for strategy in searcher.strategies} == {
+        "segment-executable"
+    }
+    assert {strategy["segment_count"] for strategy in searcher.strategies} == {4}
+    assert {
+        strategy["planner_budget"]["assignment_solver"] for strategy in searcher.strategies
+    } == {"segment_dp"}
+
+
 def test_pp_first_searcher_marks_only_executable_topk_for_short_run(tmp_path):
     config = _config(tmp_path)
     config.experiment.auto_tuner.planner = {

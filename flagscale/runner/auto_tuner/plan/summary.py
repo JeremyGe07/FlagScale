@@ -114,6 +114,7 @@ def is_runtime_executable_plan(plan: ModelPlan) -> bool:
         HOMOGENEOUS_PLAN,
         HOMOGENEOUS_VPP_PLAN,
         STAGE_HETEROGENEOUS_PLAN,
+        SEGMENT_HETEROGENEOUS_PLAN,
     }
 
 

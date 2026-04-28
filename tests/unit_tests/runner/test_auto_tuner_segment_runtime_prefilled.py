@@ -34,7 +34,7 @@ def _segment_runtime_strategy():
         "stage_count": 2,
         "segment_count": 4,
         "runtime_mode": "segment-executable",
-        "runtime_executable": False,
+        "runtime_executable": True,
         "execution_contract": {
             "world_size": 2,
             "micro_batch_size": 2,
@@ -90,7 +90,7 @@ def test_generator_rejects_unsupported_segment_heterogeneous_plan_execution(tmp_
         )
 
 
-def test_generator_reports_segment_heterogeneous_metadata_but_not_executable(tmp_path):
+def test_generator_reports_segment_heterogeneous_metadata_as_executable(tmp_path):
     config = segment_runtime_config(tmp_path, with_eval_iters=True)
 
     metadata = Generator(config)._build_plan_runtime_metadata(
@@ -115,7 +115,7 @@ def test_generator_reports_segment_heterogeneous_metadata_but_not_executable(tmp
             "stage_count": 2,
             "segment_count": 4,
             "runtime_mode": "segment-executable",
-            "runtime_executable": False,
+            "runtime_executable": True,
             "execution_contract": {
                 "world_size": 2,
                 "micro_batch_size": 2,
@@ -133,7 +133,7 @@ def test_generator_reports_segment_heterogeneous_metadata_but_not_executable(tmp
 
     assert metadata["plan_kind"] == "segment-heterogeneous"
     assert metadata["runtime_mode"] == "segment-executable"
-    assert metadata["runtime_executable"] is False
+    assert metadata["runtime_executable"] is True
 
 
 def test_generator_rejects_prefilled_segment_metadata_without_raw_stage_metadata(tmp_path):

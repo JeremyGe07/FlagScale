@@ -14,6 +14,17 @@ from segment_runtime_test_utils import (
     segment_runtime_strategy,
 )
 
+
+def test_generator_marks_raw_segment_executable_plan_runtime_executable(tmp_path):
+    config = segment_runtime_config(tmp_path, with_num_layers=True)
+
+    metadata = Generator(config)._build_plan_runtime_metadata(segment_runtime_strategy(), config)
+
+    assert metadata["plan_kind"] == "segment-heterogeneous"
+    assert metadata["runtime_mode"] == "segment-executable"
+    assert metadata["runtime_executable"] is True
+
+
 def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_path):
     config = segment_runtime_config(tmp_path, with_num_layers=True)
 
@@ -92,7 +103,7 @@ def test_generator_materializes_segment_runtime_for_segment_executable_plan(tmp_
 
     assert task.experiment.auto_tuner.plan.plan_kind == "segment-heterogeneous"
     assert task.experiment.auto_tuner.plan.runtime_mode == "segment-executable"
-    assert task.experiment.auto_tuner.plan.runtime_executable is False
+    assert task.experiment.auto_tuner.plan.runtime_executable is True
     assert task.train.system.hetero.enable_hetero is True
     assert task.train.system.hetero.hetero_pipeline_layer_split == [2, 2]
     assert task.train.system.hetero.hetero_process_meshes == [2, 1, 1, 1, 1, 1, 1, 1, 2, 1]

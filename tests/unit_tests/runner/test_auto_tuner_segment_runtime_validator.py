@@ -281,7 +281,7 @@ def test_validate_model_plan_accepts_segment_executable_subset():
     result = validate_model_plan(plan)
 
     assert result.runtime_mode == "segment-executable"
-    assert is_runtime_executable_plan(plan) is False
+    assert is_runtime_executable_plan(plan) is True
 
 
 def test_validate_model_plan_accepts_segment_executable_subset_without_pp_local():
