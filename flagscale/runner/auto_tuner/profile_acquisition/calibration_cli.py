@@ -101,6 +101,7 @@ def build_calibration_runtime_strategy(config, strategy):
     space = config.experiment.auto_tuner.get("space", {})
     sequence_parallel = _resolve_sequence_parallel(space, strategy)
     use_distributed_optimizer = _resolve_use_distributed_optimizer(space, strategy)
+    acc_step = _resolve_acc_step(config, strategy)
     return {
         "idx": strategy.strategy_idx,
         "data_parallel_size": strategy.dp,
@@ -114,6 +115,7 @@ def build_calibration_runtime_strategy(config, strategy):
         "recompute_granularity": strategy.recompute_granularity,
         "recompute_num_layers": strategy.recompute_num_layers,
         "micro_batch_size": strategy.micro_batch_size,
+        "acc_step": acc_step,
         "context_parallel_size": _resolve_context_parallel_size(space, strategy),
         "expert_model_parallel_size": strategy.expert_model_parallel_size,
         "decoder_first_pipeline_num_layers": None,
@@ -136,6 +138,31 @@ def _resolve_use_distributed_optimizer(space, strategy):
 def _resolve_context_parallel_size(space, strategy):
     value = _resolve_strategy_or_space_value(space, strategy, "context_parallel_size")
     return _coerce_positive_int(value, "context_parallel_size")
+
+
+def _resolve_acc_step(config, strategy):
+    global_batch_size = int(config.train.model.global_batch_size)
+    data_parallel_size = int(strategy.dp)
+    micro_batch_size = int(strategy.micro_batch_size)
+    if data_parallel_size <= 0:
+        raise ValueError("Warm-start calibration requires data_parallel_size to be > 0.")
+    if micro_batch_size <= 0:
+        raise ValueError("Warm-start calibration requires micro_batch_size to be > 0.")
+    if global_batch_size % data_parallel_size != 0:
+        raise ValueError(
+            "Warm-start calibration requires train.model.global_batch_size to be "
+            "divisible by data_parallel_size: "
+            f"global_batch_size={global_batch_size}, data_parallel_size={data_parallel_size}."
+        )
+    local_batch_size = global_batch_size // data_parallel_size
+    if local_batch_size % micro_batch_size != 0:
+        raise ValueError(
+            "Warm-start calibration requires local batch size to be divisible by "
+            "micro_batch_size: "
+            f"global_batch_size={global_batch_size}, data_parallel_size={data_parallel_size}, "
+            f"local_batch_size={local_batch_size}, micro_batch_size={micro_batch_size}."
+        )
+    return local_batch_size // micro_batch_size
 
 
 def _resolve_strategy_or_space_value(space, strategy, key):
