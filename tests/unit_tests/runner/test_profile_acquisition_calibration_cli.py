@@ -54,9 +54,10 @@ def _write_profile_yaml(path: Path):
     OmegaConf.save(config=OmegaConf.create(profile), f=path)
 
 
-def _build_config(space_overrides):
+def _build_config(space_overrides, *, global_batch_size=32):
     return OmegaConf.create(
         {
+            'train': {'model': {'global_batch_size': global_batch_size}},
             'experiment': {
                 'task': {'type': 'train'},
                 'auto_tuner': {'space': space_overrides},
@@ -197,6 +198,46 @@ def test_build_calibration_runtime_strategy_rejects_ambiguous_space(space_overri
 
     with pytest.raises(ValueError, match=message):
         build_calibration_runtime_strategy(config, _build_strategy())
+
+
+def test_build_calibration_runtime_strategy_includes_acc_step():
+    config = _build_config(
+        {
+            'use_distributed_optimizer': [True],
+            'sequence_parallel': [True],
+            'context_parallel_size': [1],
+        },
+        global_batch_size=64,
+    )
+
+    runtime_strategy = build_calibration_runtime_strategy(config, _build_strategy(dp=4))
+
+    assert runtime_strategy['acc_step'] == 2
+
+
+@pytest.mark.parametrize(
+    ('global_batch_size', 'dp', 'message'),
+    [
+        (30, 4, 'global_batch_size'),
+        (30, 2, 'micro_batch_size'),
+    ],
+)
+def test_build_calibration_runtime_strategy_rejects_indivisible_acc_step(
+    global_batch_size,
+    dp,
+    message,
+):
+    config = _build_config(
+        {
+            'use_distributed_optimizer': [True],
+            'sequence_parallel': [True],
+            'context_parallel_size': [1],
+        },
+        global_batch_size=global_batch_size,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        build_calibration_runtime_strategy(config, _build_strategy(dp=dp))
 
 
 def test_calibration_task_timeout_seconds_gives_first_task_grace():
