@@ -1,5 +1,8 @@
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.segment_runtime_contract import build_segment_runtime_contract
+from flagscale.runner.auto_tuner.plan.segment_stage_shell import (
+    select_segment_stage_shell_strategy,
+)
 from flagscale.runner.auto_tuner.plan.summary import (
     SEGMENT_HETEROGENEOUS_PLAN,
     STAGE_HETEROGENEOUS_PLAN,
@@ -20,9 +23,10 @@ def build_stage_hetero_runtime_overrides(strategy, config):
     if "stage_partition_ranges" not in strategy or "stage_strategies" not in strategy:
         return None
     plan = lower_strategy_to_plan(strategy, config)
-    if plan_kind(plan) not in {STAGE_HETEROGENEOUS_PLAN, SEGMENT_HETEROGENEOUS_PLAN}:
+    kind = plan_kind(plan)
+    if kind not in {STAGE_HETEROGENEOUS_PLAN, SEGMENT_HETEROGENEOUS_PLAN}:
         return None
-    stage_strategies = [dict(stage.segments[0].strategy) for stage in plan.stages]
+    stage_strategies = _stage_shell_strategies(plan, kind)
     layer_split = _layer_split(plan)
     return _build_stage_shell_overrides(stage_strategies, layer_split, config)
 
@@ -41,6 +45,12 @@ def _validate_stage_runtime_support(stage_strategies):
     signatures = {_recompute_signature(strategy) for strategy in stage_strategies}
     if len(signatures) > 1:
         raise ValueError("stage-heterogeneous recompute configuration must be consistent")
+
+
+def _stage_shell_strategies(plan, kind):
+    if kind == SEGMENT_HETEROGENEOUS_PLAN:
+        return [dict(select_segment_stage_shell_strategy(stage)) for stage in plan.stages]
+    return [dict(stage.segments[0].strategy) for stage in plan.stages]
 
 
 def _resolve_device_types(stage_strategies, config):

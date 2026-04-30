@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Any, Mapping
 
 TRANSITION_MESH_KEYS = ("tp", "cp", "ep", "dp", "pp")
@@ -8,7 +7,7 @@ REDISTRIBUTION_KINDS = frozenset({"tp-only", "dp-only", "tp-dp"})
 
 def _freeze_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze_value(item) for key, item in dict(value).items()})
+        return {key: _freeze_value(item) for key, item in dict(value).items()}
     if isinstance(value, list):
         return tuple(_freeze_value(item) for item in value)
     if isinstance(value, tuple):
@@ -16,8 +15,8 @@ def _freeze_value(value: Any) -> Any:
     return value
 
 
-def _freeze_mapping(values: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    return MappingProxyType({key: _freeze_value(item) for key, item in dict(values or {}).items()})
+def _freeze_mapping(values: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {key: _freeze_value(item) for key, item in dict(values or {}).items()}
 
 
 def _positive_int(value: int, label: str) -> int:
@@ -26,14 +25,14 @@ def _positive_int(value: int, label: str) -> int:
     return value
 
 
-def _freeze_transition_mesh(mesh: Mapping[str, Any], label: str) -> Mapping[str, int]:
+def _freeze_transition_mesh(mesh: Mapping[str, Any], label: str) -> dict[str, int]:
     frozen = _freeze_mapping(mesh)
     if set(frozen.keys()) != set(TRANSITION_MESH_KEYS):
         raise ValueError(f"{label} has unexpected or missing keys")
     values = {key: _positive_int(frozen[key], f"{label}.{key}") for key in TRANSITION_MESH_KEYS}
     if values["pp"] != 1:
         raise ValueError(f"{label}.pp must be 1")
-    return MappingProxyType(values)
+    return values
 
 
 @dataclass(frozen=True)
@@ -49,7 +48,11 @@ class SegmentRuntimeMeshSpec:
         _positive_int(self.context_parallel_size, "context_parallel_size")
         _positive_int(self.expert_model_parallel_size, "expert_model_parallel_size")
         _positive_int(self.data_parallel_size, "data_parallel_size")
-        if isinstance(self.pp_local, bool) or not isinstance(self.pp_local, int) or self.pp_local != 1:
+        if (
+            isinstance(self.pp_local, bool)
+            or not isinstance(self.pp_local, int)
+            or self.pp_local != 1
+        ):
             raise ValueError("segment-local pipeline size must be pp_local=1")
 
     def to_runtime_mesh(self) -> list[int]:
@@ -76,8 +79,16 @@ class SegmentRuntimeTransitionSpec:
     requires_sequence_parallel: bool
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "source_mesh", _freeze_transition_mesh(self.source_mesh, "source_mesh"))
-        object.__setattr__(self, "target_mesh", _freeze_transition_mesh(self.target_mesh, "target_mesh"))
+        object.__setattr__(
+            self,
+            "source_mesh",
+            _freeze_transition_mesh(self.source_mesh, "source_mesh"),
+        )
+        object.__setattr__(
+            self,
+            "target_mesh",
+            _freeze_transition_mesh(self.target_mesh, "target_mesh"),
+        )
         _positive_int(self.batch_unit, "batch_unit")
         _validate_batch_unit(self.batch_unit, self.source_mesh, self.target_mesh)
         _validate_redistribution_kind(

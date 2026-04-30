@@ -370,13 +370,14 @@ def test_build_stage_candidates_uses_chip_aware_estimate_sorting(tmp_path, monke
 
 def test_build_stage_candidates_rejects_global_batch_divisibility(tmp_path):
     config = _config(tmp_path, cards=4, global_batch_size=3, micro_batch_size=(2,))
-    searcher = PPFirstSearcher(config)
+    searcher = PPFirstSearcher.__new__(PPFirstSearcher)
+    space = {key: list(value) for key, value in config.experiment.auto_tuner.space.items()}
     partition = build_layer_count_balanced_partition(num_layers=10, pp_degree=2, world_size=4)
 
     with pytest.raises(ValueError, match="global batch"):
         build_stage_candidates(
             searcher=searcher,
-            space=searcher.space,
+            space=space,
             config=config,
             partition=partition,
             stage_index=0,

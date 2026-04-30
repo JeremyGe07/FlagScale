@@ -2,6 +2,9 @@ from flagscale.runner.auto_tuner.search.algorithm import GridAlgo
 from flagscale.runner.auto_tuner.search.pp_first_assignment import (
     generate_assignment_candidates,
 )
+from flagscale.runner.auto_tuner.search.pp_first_segment_errors import (
+    NoSegmentAssignmentCandidatesError,
+)
 from flagscale.runner.auto_tuner.search.searcher import (
     Searcher,
     get_first_last_num_layers_for_pp,
@@ -70,14 +73,23 @@ class PPFirstSearcher(Searcher):
                 runtime_layer_counts = _runtime_layer_counts_for_partition(partition)
                 if runtime_layer_counts == RUNTIME_INEXPRESSIBLE_PARTITION:
                     continue
-                partition_strategies = generate_assignment_candidates(
-                    searcher=self,
-                    space=space,
-                    config=config,
-                    pp_degree=pp_degree,
-                    max_assignments=max_assignments,
-                    partition=partition,
-                )
+                try:
+                    partition_strategies = generate_assignment_candidates(
+                        searcher=self,
+                        space=space,
+                        config=config,
+                        pp_degree=pp_degree,
+                        max_assignments=max_assignments,
+                        partition=partition,
+                    )
+                except NoSegmentAssignmentCandidatesError as exc:
+                    self.logger.warning(
+                        "PPFirstSearcher: skip segment_dp partition pp=%s index=%s reason=%s",
+                        pp_degree,
+                        partition_index,
+                        exc,
+                    )
+                    continue
                 for assignment_index, strategy in enumerate(
                     partition_strategies
                 ):
@@ -97,6 +109,8 @@ class PPFirstSearcher(Searcher):
                         list(group) for group in partition.device_groups
                     ]
                     strategies.append(strategy)
+        if not strategies:
+            raise ValueError("PPFirstSearcher produced no candidate strategies")
         return strategies
 
     def _annotate_pp_first_metadata(self):

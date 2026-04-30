@@ -157,15 +157,17 @@ def test_segment_stage_candidates_skip_mismatched_micro_batch_tuples(
     stage_range = (0, 4)
     device_group = (0, 1)
     tp1_mbs1 = _stage_candidate(0, stage_range, device_group, tp=1, dp=2, cost=8.0)
+    tp1_mbs2 = _stage_candidate(0, stage_range, device_group, tp=1, dp=2, cost=8.5)
     tp2_mbs2 = _stage_candidate(0, stage_range, device_group, tp=2, dp=1, cost=9.0)
     tp2_mbs1 = _stage_candidate(0, stage_range, device_group, tp=2, dp=1, cost=10.0)
     tp1_mbs1["micro_batch_size"] = 1
+    tp1_mbs2["micro_batch_size"] = 2
     tp2_mbs2["micro_batch_size"] = 2
     tp2_mbs1["micro_batch_size"] = 1
     monkeypatch.setattr(
         segment_mod,
         "_base_stage_candidates",
-        lambda **kwargs: [tp1_mbs1, tp2_mbs2, tp2_mbs1],
+        lambda **kwargs: [tp1_mbs1, tp1_mbs2, tp2_mbs2, tp2_mbs1],
     )
 
     candidates = build_segment_stage_candidates(
@@ -182,7 +184,7 @@ def test_segment_stage_candidates_skip_mismatched_micro_batch_tuples(
     assert {
         segment["micro_batch_size"]
         for segment in candidates[0]["segment_strategies"]
-    } == {1}
+    } == {2}
 
 
 def test_segment_stage_candidates_skip_invalid_global_batch_contracts(

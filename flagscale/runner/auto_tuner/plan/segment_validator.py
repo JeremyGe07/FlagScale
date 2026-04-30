@@ -1,6 +1,9 @@
 from collections.abc import Mapping
 
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan, SegmentPlan, StagePlan, TransitionPlan
+from flagscale.runner.auto_tuner.plan.segment_stage_shell import (
+    select_segment_stage_shell_strategy,
+)
 
 SEGMENT_EXECUTABLE = "segment-executable"
 SEGMENT_REDISRIBUTION = "segment-redistribution"
@@ -19,6 +22,7 @@ def validate_segment_executable_plan(plan: ModelPlan) -> None:
         _validate_stage_segments(stage)
     _validate_segment_transitions(plan)
     _validate_segment_global_batch_size(plan)
+    _validate_runtime_batch_axes(plan)
 
 
 def _validate_stage_segments(stage: StagePlan) -> None:
@@ -53,6 +57,51 @@ def _validate_stage_mesh_consistency(stage: StagePlan) -> None:
         tp_values.add(_required_strategy_int(segment.strategy, ("tensor_model_parallel_size", "tp")))
     if len(tp_values) > 1 and not all(segment.strategy.get("sequence_parallel") is True for segment in stage.segments):
         raise ValueError("sequence_parallel must be enabled when tensor parallelism differs across segments")
+
+
+def _validate_runtime_batch_axes(plan: ModelPlan) -> None:
+    contract = plan.contract
+    if contract is None:
+        return
+    for stage in plan.stages:
+        _validate_stage_runtime_batch_axis(stage, contract.micro_batch_size)
+
+
+def _validate_stage_runtime_batch_axis(stage: StagePlan, micro_batch_size: int) -> None:
+    if not stage.segments:
+        return
+    shell_strategy = select_segment_stage_shell_strategy(stage)
+    target = stage.segments[0]
+    batch_axis = _redistributed_batch_axis(
+        micro_batch_size,
+        shell_strategy,
+        target.strategy,
+        f"stage {stage.stage_id} stage-shell input",
+    )
+    source = target
+    for target_index, target in enumerate(stage.segments[1:], start=1):
+        batch_axis = _redistributed_batch_axis(
+            batch_axis,
+            source.strategy,
+            target.strategy,
+            f"stage {stage.stage_id} segment {target_index - 1}->{target_index}",
+        )
+        source = target
+    _redistributed_batch_axis(
+        batch_axis,
+        source.strategy,
+        shell_strategy,
+        f"stage {stage.stage_id} stage-shell output",
+    )
+
+
+def _redistributed_batch_axis(source_batch_axis: int, source, target, label: str) -> int:
+    source_dp = _required_strategy_int(source, ("data_parallel_size", "dp"))
+    target_dp = _required_strategy_int(target, ("data_parallel_size", "dp"))
+    gathered_batch_axis = source_batch_axis * source_dp
+    if gathered_batch_axis % target_dp != 0:
+        raise ValueError(f"{label} batch axis must be divisible by target data_parallel_size")
+    return gathered_batch_axis // target_dp
 
 
 def _validate_segment_mesh(stage_id: int, index: int, segment: SegmentPlan, device_count: int) -> None:

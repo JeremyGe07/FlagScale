@@ -3,6 +3,7 @@ from itertools import product
 
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.validator import validate_model_plan
+from flagscale.runner.auto_tuner.search.pp_first_segment_errors import NoSegmentStageCandidatesError
 from flagscale.runner.auto_tuner.search.pp_first_stage_candidates import build_stage_candidates
 from flagscale.runner.auto_tuner.search.pp_first_transition_cost import estimate_transition_cost
 
@@ -64,7 +65,7 @@ def build_segment_stage_candidates(
         max_segment_splits,
     )
     if not segment_candidates:
-        raise ValueError("No segment-executable stage candidates matched the stage constraints.")
+        raise NoSegmentStageCandidatesError("No segment-executable stage candidates matched.")
     return sorted(segment_candidates, key=_segment_candidate_sort_key)[:max_segment_candidates]
 
 
@@ -194,6 +195,8 @@ def _build_segment_candidate(
 ):
     candidate = _strip_metadata(segment_candidates[0])
     segment_strategies = _segment_strategies(segment_candidates)
+    if _has_tensor_parallel_transition(segment_strategies):
+        candidate["sequence_parallel"] = True
     candidate.update(
         {
             "stage_index": stage_index,

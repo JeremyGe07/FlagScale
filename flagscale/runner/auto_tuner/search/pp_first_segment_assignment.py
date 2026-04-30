@@ -6,6 +6,10 @@ from flagscale.runner.auto_tuner.search.pp_first_segment_candidates import (
     boundary_transition_strategy,
     build_segment_stage_candidates,
 )
+from flagscale.runner.auto_tuner.search.pp_first_segment_errors import (
+    NoSegmentAssignmentCandidatesError,
+    NoSegmentStageCandidatesError,
+)
 from flagscale.runner.auto_tuner.search.pp_first_transition_cost import (
     estimate_transition_cost,
 )
@@ -45,19 +49,25 @@ def _build_segment_stage_candidates(searcher, space, config, partition, planner_
     local_config = _local_config_view(config, partition)
     max_splits = _required_planner_budget(planner_cfg, "max_segment_splits_per_stage")
     max_candidates = _required_planner_budget(planner_cfg, "max_segment_candidates_per_stage")
-    return [
-        build_segment_stage_candidates(
-            searcher=searcher,
-            space=space,
-            config=local_config,
-            partition=local_partition,
-            stage_index=stage_index,
-            max_stage_candidates=planner_cfg.get("max_stage_candidates_per_stage"),
-            max_segment_splits=max_splits,
-            max_segment_candidates=max_candidates,
-        )
-        for stage_index in range(len(partition.stage_ranges))
-    ]
+    stage_candidates = []
+    for stage_index in range(len(partition.stage_ranges)):
+        try:
+            candidates = build_segment_stage_candidates(
+                searcher=searcher,
+                space=space,
+                config=local_config,
+                partition=local_partition,
+                stage_index=stage_index,
+                max_stage_candidates=planner_cfg.get("max_stage_candidates_per_stage"),
+                max_segment_splits=max_splits,
+                max_segment_candidates=max_candidates,
+            )
+        except NoSegmentStageCandidatesError as exc:
+            raise NoSegmentAssignmentCandidatesError(
+                f"pp={partition.pp_degree} stage={stage_index}: {exc}"
+            ) from exc
+        stage_candidates.append(candidates)
+    return stage_candidates
 
 
 def _solve_segment_dp_chains(stage_candidates, config, max_assignments, max_dp_results):
@@ -74,7 +84,9 @@ def _solve_segment_dp_chains(stage_candidates, config, max_assignments, max_dp_r
             continue
         chains.extend(_solve_signature_chains(filtered, config, max_results))
     if not chains:
-        raise ValueError("No segment DP-compatible assignment candidates found")
+        raise NoSegmentAssignmentCandidatesError(
+            "No segment DP-compatible assignment candidates found"
+        )
     return sorted(chains, key=lambda chain: chain.dp_aggregate_cost)[:max_results]
 
 

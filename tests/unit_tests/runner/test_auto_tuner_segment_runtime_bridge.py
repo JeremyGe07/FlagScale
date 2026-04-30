@@ -239,7 +239,7 @@ def test_apply_hetero_runtime_overrides_materializes_stage_shell_and_segment_run
 
     assert config.train.system.hetero.enable_hetero is True
     assert config.train.system.hetero.hetero_pipeline_layer_split == [2, 2]
-    assert config.train.system.hetero.hetero_process_meshes == [2, 1, 1, 1, 1, 1, 1, 1, 2, 1]
+    assert config.train.system.hetero.hetero_process_meshes == [2, 1, 1, 1, 1, 2, 1, 1, 1, 1]
     assert config.train.system.hetero.hetero_device_types == ["nvidia_l20", "nvidia_l20"]
     assert config.train.system.hetero.segment_runtime["hetero_stage_segment_splits"] == [
         [1, 1],
