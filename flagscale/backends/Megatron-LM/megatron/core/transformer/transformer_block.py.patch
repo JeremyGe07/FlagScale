@@ -127,7 +127,10 @@ index c14f8ea1f..e451b6a9a
 +        redistributed = _slice_tensor_axis(redistributed, target_pg.dp, 1)
 +    if target_mesh["tp"] > 1 and requires_sequence_parallel:
 +        redistributed = _slice_tensor_axis(redistributed, target_pg.tp, 0)
-+    return redistributed.contiguous()
++    redistributed = redistributed.contiguous()
++    return make_viewless_tensor(
++        inp=redistributed, requires_grad=redistributed.requires_grad, keep_graph=True
++    )
 +
 +
 +def _gather_tensor_axis(tensor, group, axis):

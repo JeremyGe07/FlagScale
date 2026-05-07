@@ -55,3 +55,32 @@ def test_segment_gather_preserves_autograd_chain(monkeypatch):
     assert output.requires_grad
     output.sum().backward()
     assert torch.equal(hidden_states.grad, torch.full_like(hidden_states, 3.0))
+
+
+def test_segment_dp_to_tp_redistribution_returns_viewless_tensor(monkeypatch):
+    source_pg = SimpleNamespace(tp=_FakeGroup(), dp=_FakeGroup(size=2))
+    target_pg = SimpleNamespace(tp=_FakeGroup(size=2), dp=_FakeGroup())
+    source_mesh = {"tp": 1, "cp": 1, "ep": 1, "dp": 2, "pp": 1}
+    target_mesh = {"tp": 2, "cp": 1, "ep": 1, "dp": 1, "pp": 1}
+
+    def fake_autograd_all_gather(tensor, group=None):
+        assert group is source_pg.dp
+        return tensor, tensor * 2
+
+    monkeypatch.setattr(dist_nn_functional, "all_gather", fake_autograd_all_gather)
+
+    hidden_states = torch.ones(4, 2, requires_grad=True)
+
+    output = transformer_block._redistribute_segment_tensor(
+        hidden_states,
+        source_mesh,
+        target_mesh,
+        source_pg,
+        target_pg,
+        requires_sequence_parallel=True,
+    )
+
+    assert output._base is None
+    assert output.requires_grad
+    output.sum().backward()
+    assert hidden_states.grad is not None
