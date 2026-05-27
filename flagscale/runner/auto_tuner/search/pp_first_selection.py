@@ -9,6 +9,13 @@ from flagscale.runner.auto_tuner.search.algorithm import (
     sort_by_time_cost,
 )
 from flagscale.runner.auto_tuner.search.chip_strategy_score import build_chip_score
+from flagscale.runner.auto_tuner.search.pp_first_parallel_family import (
+    DEFAULT_MIN_ASSIGNMENTS_PER_PARALLEL_FAMILY,
+    append_parallel_family_floor,
+    order_for_parallel_family_recall,
+    resolve_shortlist_parallel_family_floor,
+    select_with_parallel_family_floor,
+)
 from flagscale.runner.auto_tuner.utils import sort_by_memory_model
 
 DEFAULT_TOPK_PLANS_FOR_SHORT_RUN = 16
@@ -72,7 +79,18 @@ def select_assignment_candidates(strategies, max_assignments, config):
         return []
     if len(strategies) <= max_assignments:
         return list(strategies)
-    return sort_estimate_candidates(strategies, config)[:max_assignments]
+    ranked = sort_estimate_candidates(strategies, config)
+    floor = _planner_cfg(config).get(
+        "min_assignments_per_parallel_family",
+        DEFAULT_MIN_ASSIGNMENTS_PER_PARALLEL_FAMILY,
+    )
+    return select_with_parallel_family_floor(
+        ranked,
+        max_assignments,
+        floor,
+        _runtime_execution_key,
+        recall_ranked=order_for_parallel_family_recall(ranked, config),
+    )
 
 
 def build_short_run_shortlist(strategies, config):
@@ -83,6 +101,13 @@ def build_short_run_shortlist(strategies, config):
     shortlist = []
     seen = set()
     _append_topk_candidates(shortlist, seen, executable, topk)
+    append_parallel_family_floor(
+        shortlist,
+        seen,
+        order_for_parallel_family_recall(executable, config),
+        resolve_shortlist_parallel_family_floor(planner_cfg, executable),
+        _append_candidate,
+    )
     _append_bucket_floor(
         shortlist,
         seen,
