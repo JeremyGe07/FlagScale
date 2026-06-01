@@ -1,0 +1,74 @@
+defaults:
+  - _self_
+  - train: 14b_4xa800_revalidation
+
+experiment:
+  exp_name: qwen3_14b_a800_revalidation
+  seed: 42
+  save_steps: 10000
+  load: null
+  exp_dir: ${oc.env:FLAGSCALE_OUTPUT_ROOT,./outputs}/qwen3_14b_a800_revalidation/default
+  ckpt_format: torch
+  task:
+    type: train
+    backend: megatron
+    entrypoint: ./flagscale/train/train_gpt.py
+  runner:
+    backend: torchrun
+    per_node_task: false
+    no_shared_fs: false
+    nnodes: 1
+    nproc_per_node: 4
+  cmds:
+    before_start: |
+      ulimit -n 1048576
+      if [ -n "$CONDA_SH" ]; then
+        source "$CONDA_SH"
+      else
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+      fi
+      if [ -n "$FLAGSCALE_TRAIN_ENV" ]; then
+        conda activate "$FLAGSCALE_TRAIN_ENV"
+      else
+        conda activate flagscale-train
+      fi
+      export WANDB_MODE=offline
+  envs:
+    LOGLEVEL: "INFO"
+    CUDA_VISIBLE_DEVICES: "0,1,2,3"
+    CUDA_DEVICE_MAX_CONNECTIONS: 1
+    OMP_NUM_THREADS: 4
+    WANDB_MODE: offline
+  auto_tuner:
+    algo:
+      name: grid
+      chip_aware_scoring: false
+      use_profiled_time_cost: false
+    space:
+      data_parallel_size: auto
+      use_distributed_optimizer: [true]
+      tensor_model_parallel_size: [1, 2, 4]
+      expert_model_parallel_size: [1]
+      sequence_parallel: [true]
+      pipeline_model_parallel_size: [1, 2, 4]
+      num_layers_per_virtual_pipeline_stage: [0]
+      context_parallel_size: [1]
+      micro_batch_size: [1, 2, 4, 8]
+      use_recompute: auto
+      recompute_method: auto
+      recompute_granularity: auto
+      recompute_num_layers: auto
+    control:
+      run_best: false
+      max_time_per_task: 7200
+      train_iters: 3
+    memory_model:
+      model_name: default
+      gpu_memory: 80000
+      gpu_utilization: [0.1, 1.0]
+
+action: auto_tune
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra

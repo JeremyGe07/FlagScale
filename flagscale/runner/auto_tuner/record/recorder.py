@@ -7,6 +7,8 @@ import subprocess
 import numpy as np
 import pandas as pd
 
+from flagscale.runner.auto_tuner.record.serialization import dump_json_string
+
 
 class Recorder:
 
@@ -308,7 +310,7 @@ class Recorder:
             return ""
         if isinstance(v, (int, float, bool, str)):
             return str(v)
-        return json.dumps(v)
+        return dump_json_string(v)
 
     def save(self, history):
         sorted_history = self.sort(history)
