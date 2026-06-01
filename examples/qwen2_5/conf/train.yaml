@@ -12,8 +12,16 @@ experiment:
     entrypoint: ./flagscale/train/train_gpt.py
   cmds:
     before_start: |
-      source /usr/local/miniconda/etc/profile.d/conda.sh
-      conda activate flagscale-train
+      if [ -n "$CONDA_SH" ]; then
+        source "$CONDA_SH"
+      else
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+      fi
+      if [ -n "$FLAGSCALE_TRAIN_ENV" ]; then
+        conda activate "$FLAGSCALE_TRAIN_ENV"
+      else
+        conda activate flagscale-train
+      fi
   runner:
     backend: torchrun
     nnodes: 1

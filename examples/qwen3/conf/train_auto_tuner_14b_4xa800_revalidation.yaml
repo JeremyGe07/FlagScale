@@ -7,7 +7,7 @@ experiment:
   seed: 42
   save_steps: 10000
   load: null
-  exp_dir: /home/user-a800/GuoChanZhiSuan/outputs/qwen3_14b_a800_revalidation/default
+  exp_dir: ${oc.env:FLAGSCALE_OUTPUT_ROOT,./outputs}/qwen3_14b_a800_revalidation/default
   ckpt_format: torch
   task:
     type: train
@@ -24,8 +24,16 @@ experiment:
   cmds:
     before_start: |
       ulimit -n 1048576
-      source /home/user-a800/miniconda3/etc/profile.d/conda.sh
-      conda activate flagscale-train
+      if [ -n "$CONDA_SH" ]; then
+        source "$CONDA_SH"
+      else
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+      fi
+      if [ -n "$FLAGSCALE_TRAIN_ENV" ]; then
+        conda activate "$FLAGSCALE_TRAIN_ENV"
+      else
+        conda activate flagscale-train
+      fi
       export WANDB_MODE=offline
   envs:
     LOGLEVEL: "INFO"
@@ -60,7 +68,7 @@ experiment:
       recompute_num_layers: auto
     control:
       run_best: false
-      max_time_per_task: 900
+      max_time_per_task: 7200
       train_iters: 3
     memory_model:
       model_name: default

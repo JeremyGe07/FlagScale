@@ -76,12 +76,12 @@ model:
       lr_wsd_decay_samples: 2048
 
 data:
-  data_path: /home/user-a800/GuoChanZhiSuan/data/pile_wikipedia_demo/pile_wikipedia_demo
+  data_path: ${oc.env:PILE_WIKIPEDIA_DEMO_PATH,../data/pile_wikipedia_demo/pile_wikipedia_demo}
   split: 1
   no_mmap_bin_files: true
   tokenizer:
     legacy_tokenizer: true
     tokenizer_type: QwenTokenizerFS
-    tokenizer_path: /home/user-a800/GuoChanZhiSuan/models/Qwen3-14B
+    tokenizer_path: ${oc.env:QWEN3_14B_PATH,../models/Qwen3-14B}
     vocab_size: 151851
     make_vocab_size_divisible_by: 64
