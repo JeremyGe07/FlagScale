@@ -4,6 +4,7 @@ from flagscale.runner.auto_tuner.prune.memory import (
     prune_by_memory_model,
     prune_by_memory_model_util,
 )
+from flagscale.runner.auto_tuner.prune.time_cost import prune_by_time_cost
 
 
 class Pruner:
@@ -13,6 +14,7 @@ class Pruner:
         self.pruned_count = 0
         self.pruned_by_memory_model = 0
         self.pruned_by_chip_profile = 0
+        self.pruned_by_time_cost = 0
 
     def prune(self, strategy, history=None):
         """Prune strategy based on history recorded strategies."""
@@ -33,6 +35,14 @@ class Pruner:
                 not_run = True
                 self.pruned_by_memory_model += 1
                 self._mark_reason(strategy, "memory_model.utilization")
+
+        if not not_run and prune_by_time_cost(strategy):
+            not_run = True
+            self.pruned_by_time_cost += 1
+            self._mark_reason(
+                strategy,
+                strategy.get("time_cost_prune_reason", "time_cost.family_topk"),
+            )
 
         if not not_run:
             for func in _HISTORY_BASED_PRUNE_FUNC:

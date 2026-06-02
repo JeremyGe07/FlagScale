@@ -337,20 +337,42 @@ class AutoTuner:
             is_homogeneous = not self.config.train.system.get("hetero", {}).get(
                 "enable_hetero", False
             )
-            pruned_by_chip_profile = (
-                getattr(self.pruner, "pruned_by_chip_profile", 0) if self.pruner is not None else 0
-            )
+            pruned_by_chip_profile = 0
+            pruned_by_time_cost = 0
+            if self.pruner is not None:
+                pruned_by_chip_profile = getattr(self.pruner, "pruned_by_chip_profile", 0)
+                pruned_by_time_cost = getattr(self.pruner, "pruned_by_time_cost", 0)
             if is_homogeneous and "memory_model" in self.config.experiment.auto_tuner:
+                prune_detail = (
+                    f"{pruned_by_memory_model} by memory model, "
+                    f"{pruned_by_chip_profile} by chip profile"
+                )
+                if pruned_by_time_cost:
+                    prune_detail = f"{prune_detail}, {pruned_by_time_cost} by time cost"
                 self.logger.info(
-                    f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy, {pruned_by_memory_model} by memory model, {pruned_by_chip_profile} by chip profile."
+                    "Searching %s / %s strategy, Pruned %s strategy, %s.",
+                    self.idx + pruned_count,
+                    len(self.searcher.strategies),
+                    pruned_count,
+                    prune_detail,
                 )
             elif is_homogeneous:
+                prune_detail = f"{pruned_by_chip_profile} by chip profile"
+                if pruned_by_time_cost:
+                    prune_detail = f"{prune_detail}, {pruned_by_time_cost} by time cost"
                 self.logger.info(
-                    f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy, {pruned_by_chip_profile} by chip profile."
+                    "Searching %s / %s strategy, Pruned %s strategy, %s.",
+                    self.idx + pruned_count,
+                    len(self.searcher.strategies),
+                    pruned_count,
+                    prune_detail,
                 )
             else:
                 self.logger.info(
-                    f"Searching {self.idx+pruned_count} / {len(self.searcher.strategies)} strategy, Pruned {pruned_count} strategy."
+                    "Searching %s / %s strategy, Pruned %s strategy.",
+                    self.idx + pruned_count,
+                    len(self.searcher.strategies),
+                    pruned_count,
                 )
             self._log_planner_progress(strategy)
             self.logger.info(f"Generate task_{self.idx}")

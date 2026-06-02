@@ -25,6 +25,10 @@ from flagscale.runner.auto_tuner.search.chip_strategy_limits import (
     is_strategy_disabled_by_chip_profile,
     validate_runtime_topology,
 )
+from flagscale.runner.auto_tuner.search.time_cost_pruning import (
+    is_time_cost_pruning_enabled,
+    mark_time_cost_pruned_strategies,
+)
 from flagscale.runner.auto_tuner.utils import divisible
 
 BUILT_IN_STRATEGY_DIMS = [
@@ -146,8 +150,22 @@ class Searcher:
             or get_attached_chip_profile(self.config) is not None
         ):
             self._inject_memory_costs()
-        if self.config.experiment.auto_tuner.algo.get("use_profiled_time_cost", False):
+        use_profiled_time_cost = self.config.experiment.auto_tuner.algo.get(
+            "use_profiled_time_cost", False
+        )
+        time_cost_pruning_enabled = is_time_cost_pruning_enabled(self.config)
+        if time_cost_pruning_enabled and not use_profiled_time_cost:
+            raise ValueError(
+                "auto_tuner.algo.time_cost_pruning requires use_profiled_time_cost=true."
+            )
+        if use_profiled_time_cost:
             self._inject_time_costs()
+        if time_cost_pruning_enabled:
+            pruned_count = mark_time_cost_pruned_strategies(self.strategies, self.config)
+            self.logger.info(
+                "Searcher: marked %s strategies for profiled time-cost pruning.",
+                pruned_count,
+            )
 
         # Build search algorithm to explore strategies
         self.algo = self.build_algo(self.strategies, self.config)
