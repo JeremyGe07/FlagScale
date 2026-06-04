@@ -36,7 +36,7 @@ class Pruner:
                 self.pruned_by_memory_model += 1
                 self._mark_reason(strategy, "memory_model.utilization")
 
-        if not not_run and prune_by_time_cost(strategy):
+        if not not_run and prune_by_time_cost(strategy, history, self.config):
             not_run = True
             self.pruned_by_time_cost += 1
             self._mark_reason(

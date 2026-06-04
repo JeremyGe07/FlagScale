@@ -12,10 +12,17 @@ DEFAULT_FAMILY_DIMS = (
 DEFAULT_MODE = "family_topk"
 DEFAULT_PER_FAMILY_TOPK = 32
 PRUNE_REASON = "time_cost.family_topk"
+REPLENISH_REASON = "time_cost.family_topk.replenished_on_oom"
+SOURCE_ALL = "all"
+SOURCE_MEMORY_FEASIBLE = "memory_feasible"
 
 
 def is_time_cost_pruning_enabled(config):
     return bool(_settings(config).get("enabled", False))
+
+
+def is_family_replenish_on_oom_enabled(config):
+    return bool(_settings(config).get("family_replenish_on_oom", False))
 
 
 def mark_time_cost_pruned_strategies(strategies, config):
@@ -29,14 +36,29 @@ def mark_time_cost_pruned_strategies(strategies, config):
     groups = _group_by_family(strategies, family_dims)
     pruned_count = 0
     for family_key, family in groups.items():
-        keep_ids = {id(strategy) for strategy in _select_family_keep_set(family, config, topk)}
-        ranks = _rank_by_time_cost(family)
+        ranked_source, source_name = _rank_family_source(family, config)
+        _annotate_family(family, family_key, ranked_source, source_name, topk)
+        keep_ids = {id(strategy) for strategy in ranked_source[:topk]}
         for strategy in family:
             if id(strategy) in keep_ids:
                 continue
-            _mark_strategy(strategy, family_key, ranks[id(strategy)], topk)
+            _mark_strategy(strategy)
             pruned_count += 1
     return pruned_count
+
+
+def should_replenish_time_cost_pruned_strategy(strategy, history, config):
+    if not strategy.get("time_cost_pruned", False):
+        return False
+    if not is_family_replenish_on_oom_enabled(config):
+        return False
+    family_key, rank, topk = _strategy_family_metadata(strategy)
+    if rank <= topk:
+        return False
+    topk_history = _topk_family_history(history, family_key, topk)
+    if len(topk_history) < topk:
+        return False
+    return all(_is_no_perf_failure(entry) for entry in topk_history)
 
 
 def _settings(config):
@@ -72,10 +94,11 @@ def _family_key(strategy, family_dims):
     return tuple((dim, strategy.get(dim)) for dim in family_dims)
 
 
-def _select_family_keep_set(family, config, topk):
+def _rank_family_source(family, config):
     feasible = _memory_feasible_strategies(family, config)
     source = feasible if feasible else family
-    return sorted(source, key=_time_cost_sort_key)[:topk]
+    source_name = SOURCE_MEMORY_FEASIBLE if feasible else SOURCE_ALL
+    return sorted(source, key=_time_cost_sort_key), source_name
 
 
 def _memory_feasible_strategies(family, config):
@@ -107,9 +130,47 @@ def _rank_by_time_cost(family):
     return {id(strategy): rank for rank, strategy in enumerate(ranked, start=1)}
 
 
-def _mark_strategy(strategy, family_key, rank, topk):
+def _annotate_family(family, family_key, ranked_source, source_name, topk):
+    ranks = _rank_by_time_cost(ranked_source)
+    for strategy in family:
+        strategy["time_cost_family_key"] = dict(family_key)
+        strategy["time_cost_family_rank"] = ranks.get(id(strategy))
+        strategy["time_cost_family_topk"] = topk
+        strategy["time_cost_family_source"] = source_name
+
+
+def _strategy_family_metadata(strategy):
+    family_key = strategy.get("time_cost_family_key")
+    rank = strategy.get("time_cost_family_rank")
+    topk = strategy.get("time_cost_family_topk")
+    if family_key is None or rank is None or topk is None:
+        raise ValueError("time_cost_pruning family_replenish_on_oom requires family metadata.")
+    return family_key, int(rank), int(topk)
+
+
+def _topk_family_history(history, family_key, topk):
+    entries = []
+    for entry in history or []:
+        if entry.get("time_cost_family_key") != family_key:
+            continue
+        rank = entry.get("time_cost_family_rank")
+        if rank is not None and int(rank) <= topk:
+            entries.append(entry)
+    return entries
+
+
+def _is_no_perf_failure(entry):
+    if entry.get("performance") is not None:
+        return False
+    if entry.get("max_mem") == "OOM":
+        return True
+    return bool(
+        entry.get("error")
+        or entry.get("stopped_by_tuner")
+        or entry.get("pruned_reason")
+    )
+
+
+def _mark_strategy(strategy):
     strategy["time_cost_pruned"] = True
     strategy["time_cost_prune_reason"] = PRUNE_REASON
-    strategy["time_cost_family_key"] = dict(family_key)
-    strategy["time_cost_family_rank"] = rank
-    strategy["time_cost_family_topk"] = topk

@@ -8,13 +8,21 @@ from flagscale.runner.auto_tuner.search.time_cost_pruning import (
 from flagscale.runner.auto_tuner.tuner import AutoTuner
 
 
-def _config(*, enabled=True, per_family_topk=2, gpu_memory=100.0):
+def _config(
+    *,
+    enabled=True,
+    per_family_topk=2,
+    gpu_memory=100.0,
+    family_replenish_on_oom=False,
+):
     pruning = {
         "enabled": enabled,
         "mode": "family_topk",
     }
     if per_family_topk is not None:
         pruning["per_family_topk"] = per_family_topk
+    if family_replenish_on_oom:
+        pruning["family_replenish_on_oom"] = True
     return OmegaConf.create(
         {
             "experiment": {
@@ -113,6 +121,51 @@ def test_pruner_skips_strategy_marked_by_time_cost_pruning():
     assert strategy["pruned"] is True
     assert strategy["performance"] is None
     assert strategy["pruned_reason"] == "time_cost.family_topk"
+
+
+def test_pruner_replenishes_next_family_candidate_after_topk_failures(monkeypatch):
+    monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
+    strategies = [
+        _strategy("rank-1-oom", time_cost=1.0),
+        _strategy("rank-2-error", time_cost=2.0),
+        _strategy("rank-3-replenish", time_cost=3.0),
+    ]
+    config = _config(per_family_topk=2, family_replenish_on_oom=True)
+    mark_time_cost_pruned_strategies(strategies, config)
+    strategies[0]["performance"] = None
+    strategies[0]["max_mem"] = "OOM"
+    strategies[1]["performance"] = None
+    strategies[1]["max_mem"] = None
+    strategies[1]["error"] = "IndexError"
+    pruner = Pruner(config)
+
+    pruned = pruner.prune(strategies[2], strategies[:2])
+
+    assert pruned is False
+    assert strategies[2]["time_cost_replenished"] is True
+    assert pruner.pruned_by_time_cost == 0
+
+
+def test_pruner_does_not_replenish_when_a_topk_candidate_has_perf(monkeypatch):
+    monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
+    strategies = [
+        _strategy("rank-1-oom", time_cost=1.0),
+        _strategy("rank-2-success", time_cost=2.0),
+        _strategy("rank-3-pruned", time_cost=3.0),
+    ]
+    config = _config(per_family_topk=2, family_replenish_on_oom=True)
+    mark_time_cost_pruned_strategies(strategies, config)
+    strategies[0]["performance"] = None
+    strategies[0]["max_mem"] = "OOM"
+    strategies[1]["performance"] = 123.4
+    strategies[1]["max_mem"] = 456.0
+    pruner = Pruner(config)
+
+    pruned = pruner.prune(strategies[2], strategies[:2])
+
+    assert pruned is True
+    assert "time_cost_replenished" not in strategies[2]
+    assert pruner.pruned_by_time_cost == 1
 
 
 def test_autotuner_summary_log_reports_time_cost_prune_count(monkeypatch, tmp_path):
