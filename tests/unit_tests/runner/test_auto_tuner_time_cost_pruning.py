@@ -111,6 +111,32 @@ def test_default_family_topk_uses_current_balanced_a800_and_l20_default():
     assert strategies[first_pruned_rank - 1]["time_cost_pruned"] is True
 
 
+def test_default_replenish_budget_allows_five_extra_family_candidates(monkeypatch):
+    monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
+    strategies = [
+        _strategy(f"rank-{idx}", time_cost=float(idx))
+        for idx in range(1, 8)
+    ]
+    config = _config(
+        per_family_topk=2,
+        family_replenish_on_oom=True,
+        max_replenish_per_family=None,
+    )
+    mark_time_cost_pruned_strategies(strategies, config)
+    for strategy in strategies[:6]:
+        strategy["performance"] = None
+        strategy["max_mem"] = "OOM"
+    strategies[2]["time_cost_replenished"] = True
+    strategies[3]["time_cost_replenished"] = True
+    strategies[4]["time_cost_replenished"] = True
+    strategies[5]["time_cost_replenished"] = True
+
+    pruned = Pruner(config).prune(strategies[6], strategies[:6])
+
+    assert pruned is False
+    assert strategies[6]["time_cost_replenished"] is True
+
+
 def test_pruner_skips_strategy_marked_by_time_cost_pruning():
     strategy = _strategy("extra", time_cost=3.0)
     strategy["time_cost_pruned"] = True
@@ -148,6 +174,29 @@ def test_pruner_replenishes_next_family_candidate_after_topk_failures(monkeypatc
     assert pruner.pruned_by_time_cost == 0
 
 
+def test_pruner_replenishes_after_non_oom_no_perf_topk_failure(monkeypatch):
+    monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
+    strategies = [
+        _strategy("rank-1-oom", time_cost=1.0),
+        _strategy("rank-2-runtime-error", time_cost=2.0),
+        _strategy("rank-3-replenish", time_cost=3.0),
+    ]
+    config = _config(per_family_topk=2, family_replenish_on_oom=True)
+    mark_time_cost_pruned_strategies(strategies, config)
+    strategies[0]["performance"] = None
+    strategies[0]["max_mem"] = "OOM"
+    strategies[1]["performance"] = None
+    strategies[1]["max_mem"] = None
+    strategies[1]["error"] = "IndexError"
+    pruner = Pruner(config)
+
+    pruned = pruner.prune(strategies[2], strategies[:2])
+
+    assert pruned is False
+    assert strategies[2]["time_cost_replenished"] is True
+    assert pruner.pruned_by_time_cost == 0
+
+
 def test_pruner_does_not_replenish_when_a_topk_candidate_has_perf(monkeypatch):
     monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
     strategies = [
@@ -170,30 +219,7 @@ def test_pruner_does_not_replenish_when_a_topk_candidate_has_perf(monkeypatch):
     assert pruner.pruned_by_time_cost == 1
 
 
-def test_pruner_does_not_replenish_after_non_oom_topk_failure(monkeypatch):
-    monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
-    strategies = [
-        _strategy("rank-1-oom", time_cost=1.0),
-        _strategy("rank-2-runtime-error", time_cost=2.0),
-        _strategy("rank-3-pruned", time_cost=3.0),
-    ]
-    config = _config(per_family_topk=2, family_replenish_on_oom=True)
-    mark_time_cost_pruned_strategies(strategies, config)
-    strategies[0]["performance"] = None
-    strategies[0]["max_mem"] = "OOM"
-    strategies[1]["performance"] = None
-    strategies[1]["max_mem"] = None
-    strategies[1]["error"] = "IndexError"
-    pruner = Pruner(config)
-
-    pruned = pruner.prune(strategies[2], strategies[:2])
-
-    assert pruned is True
-    assert "time_cost_replenished" not in strategies[2]
-    assert pruner.pruned_by_time_cost == 1
-
-
-def test_pruner_limits_replenished_candidates_per_family(monkeypatch):
+def test_pruner_continues_replenishing_until_budget_is_exhausted(monkeypatch):
     monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
     strategies = [
         _strategy("rank-1-oom", time_cost=1.0),
@@ -204,12 +230,41 @@ def test_pruner_limits_replenished_candidates_per_family(monkeypatch):
     config = _config(
         per_family_topk=2,
         family_replenish_on_oom=True,
-        max_replenish_per_family=1,
+        max_replenish_per_family=2,
     )
     mark_time_cost_pruned_strategies(strategies, config)
     for strategy in strategies[:3]:
         strategy["performance"] = None
         strategy["max_mem"] = "OOM"
+    strategies[2]["time_cost_replenished"] = True
+    pruner = Pruner(config)
+
+    pruned = pruner.prune(strategies[3], strategies[:3])
+
+    assert pruned is False
+    assert strategies[3]["time_cost_replenished"] is True
+    assert pruner.pruned_by_time_cost == 0
+
+
+def test_pruner_stops_replenishing_after_successful_family_perf(monkeypatch):
+    monkeypatch.setattr("flagscale.runner.auto_tuner.prune.pruner._HISTORY_BASED_PRUNE_FUNC", [])
+    strategies = [
+        _strategy("rank-1-oom", time_cost=1.0),
+        _strategy("rank-2-oom", time_cost=2.0),
+        _strategy("rank-3-replenished-success", time_cost=3.0),
+        _strategy("rank-4-pruned", time_cost=4.0),
+    ]
+    config = _config(
+        per_family_topk=2,
+        family_replenish_on_oom=True,
+        max_replenish_per_family=5,
+    )
+    mark_time_cost_pruned_strategies(strategies, config)
+    for strategy in strategies[:2]:
+        strategy["performance"] = None
+        strategy["max_mem"] = "OOM"
+    strategies[2]["performance"] = 123.4
+    strategies[2]["max_mem"] = 456.0
     strategies[2]["time_cost_replenished"] = True
     pruner = Pruner(config)
 

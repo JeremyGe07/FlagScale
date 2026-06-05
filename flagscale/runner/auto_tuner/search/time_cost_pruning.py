@@ -11,8 +11,7 @@ DEFAULT_FAMILY_DIMS = (
 )
 DEFAULT_MODE = "family_topk"
 DEFAULT_PER_FAMILY_TOPK = 32
-DEFAULT_MAX_REPLENISH_PER_FAMILY = 1
-OOM_ERROR_MARKERS = ("OutOfMemoryError", "CUDA out of memory", "OOM|")
+DEFAULT_MAX_REPLENISH_PER_FAMILY = 5
 PRUNE_REASON = "time_cost.family_topk"
 REPLENISH_REASON = "time_cost.family_topk.replenished_on_oom"
 SOURCE_ALL = "all"
@@ -58,12 +57,14 @@ def should_replenish_time_cost_pruned_strategy(strategy, history, config):
     family_key, rank, topk = _strategy_family_metadata(strategy)
     if rank <= topk:
         return False
+    if _family_has_success(history, family_key):
+        return False
     if _replenished_family_count(history, family_key) >= _max_replenish_per_family(settings):
         return False
     topk_history = _topk_family_history(history, family_key, topk)
     if len(topk_history) < topk:
         return False
-    return all(_is_oom_no_perf_failure(entry) for entry in topk_history)
+    return all(_is_no_perf_failure(entry) for entry in topk_history)
 
 
 def _settings(config):
@@ -181,18 +182,16 @@ def _replenished_family_count(history, family_key):
     )
 
 
-def _is_oom_no_perf_failure(entry):
-    if entry.get("performance") is not None:
-        return False
-    if entry.get("max_mem") == "OOM":
-        return True
-    return _error_mentions_oom(entry.get("error"))
+def _family_has_success(history, family_key):
+    return any(
+        entry.get("time_cost_family_key") == family_key
+        and entry.get("performance") is not None
+        for entry in history or []
+    )
 
 
-def _error_mentions_oom(error):
-    if not error:
-        return False
-    return any(marker in str(error) for marker in OOM_ERROR_MARKERS)
+def _is_no_perf_failure(entry):
+    return entry.get("performance") is None
 
 
 def _mark_strategy(strategy):
