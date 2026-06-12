@@ -400,6 +400,7 @@ class Searcher:
             memory_cost = estimate_memory_cost(strategy, self.config)
             strategy["memory_model"] = memory_cost["memory_total_mb"]
             strategy["memory_breakdown"] = memory_cost["memory_breakdown"]
+            self._copy_memory_audit_fields(strategy, memory_cost["memory_breakdown"])
             if "memory_model" in self.config.experiment.auto_tuner:
                 strategy["gpu_utilization"] = self.config.experiment.auto_tuner.memory_model.get(
                     "gpu_utilization", [0.2, 0.8]
@@ -409,6 +410,13 @@ class Searcher:
                     strategy, strategy["memory_model"]
                 )
             )
+
+    def _copy_memory_audit_fields(self, strategy, breakdown):
+        strategy["memory_model_peak_activation_bias"] = breakdown.get(
+            "peak_activation_bias_mb", 0.0
+        )
+        strategy["memory_model_profiled_peak"] = breakdown.get("profiled_peak_mb")
+        strategy["memory_model_profiled_total"] = breakdown.get("profiled_memory_total_mb")
 
     def _inject_time_costs(self):
         for strategy in self.strategies:

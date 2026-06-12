@@ -100,25 +100,26 @@ def build_short_run_shortlist(strategies, config):
     topk = planner_cfg.get("topk_plans_for_short_run", DEFAULT_TOPK_PLANS_FOR_SHORT_RUN)
     shortlist = []
     seen = set()
-    _append_topk_candidates(shortlist, seen, executable, topk)
+    memory_ranked = order_for_parallel_family_recall(executable, config)
+    _append_topk_candidates(shortlist, seen, memory_ranked, topk)
     append_parallel_family_floor(
         shortlist,
         seen,
-        order_for_parallel_family_recall(executable, config),
+        memory_ranked,
         resolve_shortlist_parallel_family_floor(planner_cfg, executable),
         _append_candidate,
     )
     _append_bucket_floor(
         shortlist,
         seen,
-        executable,
+        memory_ranked,
         _resolve_pp_floor(planner_cfg, executable),
         lambda strategy: strategy["pipeline_model_parallel_size"],
     )
     _append_bucket_floor(
         shortlist,
         seen,
-        executable,
+        memory_ranked,
         _resolve_policy_floor(planner_cfg, executable),
         lambda strategy: strategy.get("partition_policy"),
     )
@@ -272,6 +273,15 @@ def _inject_memory_costs(strategies, config):
         memory_cost = estimate_memory_cost(strategy, config)
         strategy["memory_model"] = memory_cost["memory_total_mb"]
         strategy["memory_breakdown"] = memory_cost["memory_breakdown"]
+        _copy_memory_audit_fields(strategy, memory_cost["memory_breakdown"])
+
+
+def _copy_memory_audit_fields(strategy, breakdown):
+    strategy["memory_model_peak_activation_bias"] = breakdown.get(
+        "peak_activation_bias_mb", 0.0
+    )
+    strategy["memory_model_profiled_peak"] = breakdown.get("profiled_peak_mb")
+    strategy["memory_model_profiled_total"] = breakdown.get("profiled_memory_total_mb")
 
 
 def _inject_time_costs(strategies, config):

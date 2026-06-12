@@ -19,6 +19,9 @@ DEFAULT_MEMORY_BREAKDOWN = {
     "recompute_saved_mb": 0.0,
     "peak_mb": 0.0,
     "reserved_mb": 0.0,
+    "peak_activation_bias_mb": 0.0,
+    "profiled_peak_mb": 0.0,
+    "profiled_memory_total_mb": 0.0,
 }
 FULL_MODEL_STATE_MULTIPLIER = 18.0
 SHARDED_MODEL_STATE_BASE = 6.0
@@ -43,7 +46,8 @@ def _estimate_strategy_memory_cost(strategy, config):
     model_states_mb = max(base_total_mb - actual_activation_mb, 0.0)
     recompute_saved_mb = max(disabled_recompute_activation_mb - actual_activation_mb, 0.0)
     reserved_mb, peak_activation_bias_mb = _read_biases(config)
-    peak_mb = base_total_mb + peak_activation_bias_mb
+    peak_mb = base_total_mb
+    profiled_peak_mb = peak_mb + peak_activation_bias_mb
 
     breakdown = deepcopy(DEFAULT_MEMORY_BREAKDOWN)
     breakdown["model_states_mb"] = model_states_mb
@@ -52,6 +56,9 @@ def _estimate_strategy_memory_cost(strategy, config):
     breakdown["recompute_saved_mb"] = recompute_saved_mb
     breakdown["peak_mb"] = peak_mb
     breakdown["reserved_mb"] = reserved_mb
+    breakdown["peak_activation_bias_mb"] = peak_activation_bias_mb
+    breakdown["profiled_peak_mb"] = profiled_peak_mb
+    breakdown["profiled_memory_total_mb"] = profiled_peak_mb + reserved_mb
     return {
         "memory_total_mb": peak_mb + reserved_mb,
         "memory_breakdown": breakdown,

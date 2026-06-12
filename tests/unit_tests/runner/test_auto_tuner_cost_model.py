@@ -1,6 +1,4 @@
 import importlib
-import sys
-import types
 from types import SimpleNamespace
 
 import pytest
@@ -190,25 +188,6 @@ def _build_strategy(**overrides):
     }
     strategy.update(overrides)
     return strategy
-
-
-def _install_fake_cost_modules(monkeypatch, memory_result, time_result):
-    cost_pkg = types.ModuleType("flagscale.runner.auto_tuner.cost")
-    memory_mod = types.ModuleType("flagscale.runner.auto_tuner.cost.memory_cost")
-    time_mod = types.ModuleType("flagscale.runner.auto_tuner.cost.time_cost")
-
-    memory_mod.estimate_memory_cost = lambda strategy, config: memory_result
-    time_mod.estimate_time_cost = lambda strategy, config: time_result
-    cost_pkg.estimate_memory_cost = memory_mod.estimate_memory_cost
-    cost_pkg.estimate_time_cost = time_mod.estimate_time_cost
-    cost_pkg.memory_cost = memory_mod
-    cost_pkg.time_cost = time_mod
-
-    monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.cost", cost_pkg)
-    monkeypatch.setitem(
-        sys.modules, "flagscale.runner.auto_tuner.cost.memory_cost", memory_mod
-    )
-    monkeypatch.setitem(sys.modules, "flagscale.runner.auto_tuner.cost.time_cost", time_mod)
 
 
 def test_load_chip_profile_fills_default_cost_model_fields(tmp_path):
@@ -477,6 +456,27 @@ def test_memory_cost_increases_when_reserved_bias_is_present(tmp_path):
     assert with_bias["memory_breakdown"]["reserved_mb"] > without_bias["memory_breakdown"][
         "reserved_mb"
     ]
+
+
+def test_peak_activation_bias_is_reported_without_pruning_total(tmp_path):
+    strategy = _build_strategy()
+    config_without_peak_bias = build_autotuner_config(
+        tmp_path / "without_peak_bias",
+        chip_profile={"profile": _build_chip_profile(peak_activation_bias_mb=0)},
+    )
+    config_with_peak_bias = build_autotuner_config(
+        tmp_path / "with_peak_bias",
+        chip_profile={"profile": _build_chip_profile(peak_activation_bias_mb=512)},
+    )
+
+    without_bias = _estimate_memory_cost(strategy, config_without_peak_bias)
+    with_bias = _estimate_memory_cost(strategy, config_with_peak_bias)
+
+    assert with_bias["memory_total_mb"] == pytest.approx(without_bias["memory_total_mb"])
+    assert with_bias["memory_breakdown"]["peak_activation_bias_mb"] == pytest.approx(512.0)
+    assert with_bias["memory_breakdown"]["profiled_peak_mb"] == pytest.approx(
+        without_bias["memory_breakdown"]["peak_mb"] + 512.0
+    )
 
 
 def test_memory_cost_reports_recompute_saved_memory(tmp_path):
@@ -873,11 +873,9 @@ def test_searcher_only_injects_memory_cost_fields_into_strategy(monkeypatch, tmp
         "memory_total_mb": FAKE_MEMORY_TOTAL_MB,
         "memory_breakdown": {"peak_mb": 234.0, "reserved_mb": 56.0},
     }
-    _install_fake_cost_modules(monkeypatch, memory_result, {})
 
     import flagscale.runner.auto_tuner.search.searcher as searcher_module
 
-    searcher_module = importlib.reload(searcher_module)
     monkeypatch.setattr(
         searcher_module,
         "estimate_memory_cost",

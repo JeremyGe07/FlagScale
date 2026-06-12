@@ -1,8 +1,12 @@
 from collections import Counter
+from collections.abc import Mapping
 
 DEFAULT_MIN_ASSIGNMENTS_PER_PARALLEL_FAMILY = 1
 DEFAULT_MIN_SHORTLIST_PER_PARALLEL_FAMILY = 1
 DEFAULT_MEMORY_UTILIZATION = (0.0, 1.0)
+MEMORY_RECALL_SAFE = 0
+MEMORY_RECALL_PROFILED_RISK = 1
+MEMORY_RECALL_MODEL_PRUNED = 2
 PARALLEL_FAMILY_KEYS = (
     "data_parallel_size",
     "tensor_model_parallel_size",
@@ -120,14 +124,30 @@ def _resolve_gpu_memory(config):
 def _memory_prune_rank(strategy, gpu_memory):
     memory_model = strategy.get("memory_model")
     if memory_model is None:
-        return 0
+        return MEMORY_RECALL_SAFE
     lower_bound, upper_bound = _memory_bounds(strategy, gpu_memory)
     memory_model = float(memory_model)
-    if lower_bound <= memory_model <= upper_bound:
-        return 0
-    return 1
+    if not lower_bound <= memory_model <= upper_bound:
+        return MEMORY_RECALL_MODEL_PRUNED
+    profiled_total = _profiled_total_mb(strategy)
+    if profiled_total is not None and profiled_total > upper_bound:
+        return MEMORY_RECALL_PROFILED_RISK
+    return MEMORY_RECALL_SAFE
 
 
 def _memory_bounds(strategy, gpu_memory):
     utilization = strategy.get("gpu_utilization", DEFAULT_MEMORY_UTILIZATION)
     return gpu_memory * float(utilization[0]), gpu_memory * float(utilization[1])
+
+
+def _profiled_total_mb(strategy):
+    profiled_total = strategy.get("memory_model_profiled_total")
+    if profiled_total is not None:
+        return float(profiled_total)
+    breakdown = strategy.get("memory_breakdown")
+    if not isinstance(breakdown, Mapping):
+        return None
+    profiled_total = breakdown.get("profiled_memory_total_mb")
+    if profiled_total is None:
+        return None
+    return float(profiled_total)

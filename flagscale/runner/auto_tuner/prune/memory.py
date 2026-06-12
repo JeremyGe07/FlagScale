@@ -9,7 +9,13 @@ def _format_memory_breakdown(strategy):
         return ""
     reserved_mb = breakdown.get("reserved_mb")
     peak_mb = breakdown.get("peak_mb")
-    return f" reserved_mb={reserved_mb}, peak_mb={peak_mb}."
+    peak_bias_mb = breakdown.get("peak_activation_bias_mb")
+    profiled_total_mb = breakdown.get("profiled_memory_total_mb")
+    return (
+        f" reserved_mb={reserved_mb}, peak_mb={peak_mb}, "
+        f"peak_activation_bias_mb={peak_bias_mb}, "
+        f"profiled_memory_total_mb={profiled_total_mb}."
+    )
 
 
 def prune_by_memory_model(config, strategy, history=[]):
