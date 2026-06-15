@@ -70,10 +70,6 @@ experiment:
       run_best: false
       max_time_per_task: 7200
       train_iters: 3
-    memory_model:
-      model_name: default
-      gpu_memory: 81920
-      gpu_utilization: [0.1, 1.0]
     platform: {}
     nnodes: ${experiment.runner.nnodes}
     nproc_per_node: ${experiment.runner.nproc_per_node}
