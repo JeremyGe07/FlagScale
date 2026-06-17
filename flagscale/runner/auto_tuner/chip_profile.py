@@ -254,28 +254,28 @@ def _validate_optional_collective_profiles(intra_node):
         return
     profiles = intra_node["collective_profiles"]
     profiles = _require_mapping("interconnect.intra_node.collective_profiles", profiles)
-    if "all_reduce" not in profiles:
-        return
-    all_reduce = profiles["all_reduce"]
-    all_reduce = _require_mapping(
-        "interconnect.intra_node.collective_profiles.all_reduce",
-        all_reduce,
-    )
-    for group_key, group_profile in all_reduce.items():
+    for collective_name, collective_profile in profiles.items():
+        section_name = f"interconnect.intra_node.collective_profiles.{collective_name}"
+        collective_profile = _require_mapping(section_name, collective_profile)
+        _validate_collective_profile(section_name, collective_profile)
+
+
+def _validate_collective_profile(section_name, collective_profile):
+    for group_key, group_profile in collective_profile.items():
         _validate_group_size_key(group_key)
-        section_name = f"interconnect.intra_node.collective_profiles.all_reduce.{group_key}"
-        group_profile = _require_mapping(section_name, group_profile)
-        _require_keys(section_name, group_profile, ("bandwidth_gbps", "latency_us"))
-        _require_positive_fields(section_name, group_profile, ("bandwidth_gbps", "latency_us"))
+        group_section = f"{section_name}.{group_key}"
+        group_profile = _require_mapping(group_section, group_profile)
+        _require_keys(group_section, group_profile, ("bandwidth_gbps", "latency_us"))
+        _require_positive_fields(group_section, group_profile, ("bandwidth_gbps", "latency_us"))
 
 
 def _validate_group_size_key(group_key):
     prefix = "group_size_"
     suffix = group_key[len(prefix) :] if isinstance(group_key, str) else ""
     if not isinstance(group_key, str) or not group_key.startswith(prefix):
-        raise ValueError(f"Invalid all-reduce group profile key: {group_key}")
+        raise ValueError(f"Invalid collective group profile key: {group_key}")
     if not suffix.isdigit() or int(suffix) <= 0:
-        raise ValueError(f"Invalid all-reduce group profile key: {group_key}")
+        raise ValueError(f"Invalid collective group profile key: {group_key}")
 
 def _validate_gpu_pair(field_name, gpu_pair):
     valid_pair = (

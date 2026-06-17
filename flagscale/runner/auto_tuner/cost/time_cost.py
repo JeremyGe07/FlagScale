@@ -1,7 +1,10 @@
 from copy import deepcopy
 from math import log2
 
-from flagscale.runner.auto_tuner.cost.collective_profiles import resolve_all_reduce_metrics
+from flagscale.runner.auto_tuner.cost.collective_profiles import (
+    resolve_all_reduce_metrics,
+    resolve_collective_metrics,
+)
 from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
 from flagscale.runner.auto_tuner.plan.lowering import lower_strategy_to_plan
 from flagscale.runner.auto_tuner.plan.schema import ModelPlan
@@ -462,7 +465,7 @@ def _estimate_expert_comm_ms(profile):
     model = profile["model"]
     if strategy["expert_model_parallel_size"] <= 1 or not _is_moe_model(model):
         return 0.0
-    bandwidth_gbps, latency_us, _ = _communication_link(profile, "ep", "collective")
+    bandwidth_gbps, latency_us = _expert_comm_link(profile, _dispatcher_collective(model))
     repetitions = strategy["acc_step"] * _stage_moe_layers(profile) * _dispatcher_exchanges(model)
     volume_bytes = _activation_bytes(profile) * float(
         model.get("moe_router_topk", DEFAULT_MOE_ROUTER_TOPK)
@@ -615,9 +618,28 @@ def _effective_expert_parallel_size(strategy, model):
 
 
 def _dispatcher_exchanges(model):
-    if str(model.get("moe_token_dispatcher_type", "allgather")).lower() == "alltoall":
+    if _dispatcher_collective(model) == "all_to_all":
         return MOE_ALLTOALL_EXCHANGES
     return MOE_ALLGATHER_EXCHANGES
+
+
+def _dispatcher_collective(model):
+    dispatcher = str(model.get("moe_token_dispatcher_type", "allgather"))
+    if dispatcher.lower().replace("_", "") == "alltoall":
+        return "all_to_all"
+    return "all_gather"
+
+
+def _expert_comm_link(profile, collective):
+    interconnect = profile["hardware"]["interconnect"]
+    if _group_spans_nodes(profile, "ep"):
+        host_device = interconnect["host_device"]
+        return float(host_device["bandwidth_gbps"]), float(host_device["latency_us"])
+    return resolve_collective_metrics(
+        interconnect,
+        collective,
+        _group_size(profile, "ep"),
+    )
 
 
 def _communication_link(profile, kind, traffic):

@@ -167,6 +167,18 @@ def _build_group_size_all_reduce_profile():
     return profile
 
 
+def _build_group_size_moe_collective_profile():
+    profile = _build_group_size_all_reduce_profile()
+    profile["interconnect"]["intra_node"]["collective_profiles"]["all_gather"] = {
+        "group_size_2": {"bandwidth_gbps": 200, "latency_us": 2},
+        "group_size_4": {"bandwidth_gbps": 80, "latency_us": 20},
+    }
+    profile["interconnect"]["intra_node"]["collective_profiles"]["all_to_all"] = {
+        "group_size_4": {"bandwidth_gbps": 600, "latency_us": 2}
+    }
+    return profile
+
+
 def _build_strategy(**overrides):
     strategy = {
         "data_parallel_size": 1,
@@ -626,6 +638,16 @@ def test_resolve_all_reduce_metrics_falls_back_to_legacy_all_reduce_scalar():
     assert resolve_all_reduce_metrics(interconnect, 2) == (45.0, 8.0)
 
 
+def test_resolve_all_to_all_metrics_prefers_group_size_specific_profile():
+    from flagscale.runner.auto_tuner.cost.collective_profiles import (
+        resolve_collective_metrics,
+    )
+
+    interconnect = _build_group_size_moe_collective_profile()["interconnect"]
+
+    assert resolve_collective_metrics(interconnect, "all_to_all", 4) == (600.0, 2.0)
+
+
 def test_time_cost_prefers_group_size_specific_all_reduce_profile(tmp_path):
     config = build_autotuner_config(
         tmp_path,
@@ -654,17 +676,17 @@ def test_time_cost_uses_tp_group_size_specific_all_reduce_profile(tmp_path):
     assert tp2["time_breakdown"]["tp_comm_ms"] < tp4["time_breakdown"]["tp_comm_ms"]
 
 
-def test_time_cost_uses_ep_group_size_specific_all_reduce_profile(tmp_path):
+def test_time_cost_uses_ep_group_size_specific_all_gather_profile(tmp_path):
     config = build_autotuner_config(
         tmp_path,
-        chip_profile={"profile": _build_group_size_all_reduce_profile()},
+        chip_profile={"profile": _build_group_size_moe_collective_profile()},
         runner_nnodes=1,
         runner_nproc_per_node=4,
         model_overrides={
             "num_experts": 8,
             "moe_router_topk": 2,
             "moe_layer_freq": 1,
-            "moe_token_dispatcher_type": "alltoall",
+            "moe_token_dispatcher_type": "allgather",
         },
     )
 
@@ -672,6 +694,37 @@ def test_time_cost_uses_ep_group_size_specific_all_reduce_profile(tmp_path):
     ep4 = _estimate_time_cost(_build_strategy(expert_model_parallel_size=4), config)
 
     assert ep2["time_breakdown"]["expert_comm_ms"] < ep4["time_breakdown"]["expert_comm_ms"]
+
+
+def test_time_cost_moe_alltoall_uses_all_to_all_profile(tmp_path):
+    model_overrides = {
+        "num_experts": 8,
+        "moe_router_topk": 2,
+        "moe_layer_freq": 1,
+        "moe_token_dispatcher_type": "alltoall",
+    }
+    all_reduce_only_config = build_autotuner_config(
+        tmp_path / "all-reduce-only",
+        chip_profile={"profile": _build_group_size_all_reduce_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides=model_overrides,
+    )
+    all_to_all_config = build_autotuner_config(
+        tmp_path / "all-to-all",
+        chip_profile={"profile": _build_group_size_moe_collective_profile()},
+        runner_nnodes=1,
+        runner_nproc_per_node=4,
+        model_overrides=model_overrides,
+    )
+
+    strategy = _build_strategy(expert_model_parallel_size=4)
+    all_reduce_only = _estimate_time_cost(strategy, all_reduce_only_config)
+    all_to_all = _estimate_time_cost(strategy, all_to_all_config)
+
+    assert all_to_all["time_breakdown"]["expert_comm_ms"] < (
+        all_reduce_only["time_breakdown"]["expert_comm_ms"]
+    )
 
 
 def test_time_cost_falls_back_to_legacy_all_reduce_scalar_when_group_profile_missing(
