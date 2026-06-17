@@ -66,6 +66,10 @@ class TopologyAwareFakeBackend:
                 2: _collective_measurement(154.0, 8.5, {'group_size': 2}),
                 4: _collective_measurement(121.0, 13.2, {'group_size': 4}),
             },
+            'all_to_all_profiles': {
+                2: _collective_measurement(88.0, 10.5, {'group_size': 2}),
+                4: _collective_measurement(72.0, 17.5, {'group_size': 4}),
+            },
         }
 
 
@@ -182,12 +186,14 @@ def test_measure_collectives_torch_runner_writes_extended_measured_yaml(tmp_path
     assert intra_node['p2p_bandwidth_gbps'] == 95.0
     assert intra_node['p2p_classes']['pix']['bandwidth_gbps'] == 210.0
     assert intra_node['p2p_classes']['sys']['gpu_pair'] == [0, 2]
-    assert _all_reduce_group(intra_node, 2)['latency_us'] == 8.5
-    assert _all_reduce_group(intra_node, 4)['bandwidth_gbps'] == 121.0
+    assert _collective_group(intra_node, 'all_reduce', 2)['latency_us'] == 8.5
+    assert _collective_group(intra_node, 'all_reduce', 4)['bandwidth_gbps'] == 121.0
+    assert _collective_group(intra_node, 'all_to_all', 2)['latency_us'] == 10.5
+    assert _collective_group(intra_node, 'all_to_all', 4)['bandwidth_gbps'] == 72.0
 
 
-def _all_reduce_group(intra_node, group_size):
-    profiles = intra_node['collective_profiles']['all_reduce']
+def _collective_group(intra_node, collective, group_size):
+    profiles = intra_node['collective_profiles'][collective]
     return profiles[f'group_size_{group_size}']
 
 

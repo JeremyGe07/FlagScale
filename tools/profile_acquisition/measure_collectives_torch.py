@@ -16,6 +16,7 @@ DEFAULT_LARGE_BYTES = 64 * 1024 * 1024
 CUDA_DEVICE = "cuda"
 P2P_COLLECTIVE = "p2p"
 ALL_REDUCE_COLLECTIVE = "all_reduce"
+ALL_TO_ALL_COLLECTIVE = "all_to_all"
 NCCL_BACKEND = "nccl"
 
 
@@ -24,7 +25,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--collective",
         required=True,
-        choices=[P2P_COLLECTIVE, ALL_REDUCE_COLLECTIVE],
+        choices=[P2P_COLLECTIVE, ALL_REDUCE_COLLECTIVE, ALL_TO_ALL_COLLECTIVE],
     )
     parser.add_argument("--warmup-iters", type=int, default=DEFAULT_WARMUP_ITERS)
     parser.add_argument("--iters", type=int, default=DEFAULT_ITERS)
@@ -45,6 +46,8 @@ def measure_collective(args):
     try:
         if args.collective == P2P_COLLECTIVE:
             return _measure_p2p(args)
+        if args.collective == ALL_TO_ALL_COLLECTIVE:
+            return _measure_all_to_all(args)
         return _measure_all_reduce(args)
     finally:
         _destroy_process_group()
@@ -98,6 +101,27 @@ def _measure_all_reduce(args):
     }
 
 
+def _measure_all_to_all(args):
+    latency_bytes = _aligned_collective_bytes(args.small_bytes)
+    bandwidth_bytes = _aligned_collective_bytes(args.large_bytes)
+    latency_s = _average_seconds(
+        _run_all_to_all_once,
+        latency_bytes,
+        args.warmup_iters,
+        args.iters,
+    )
+    bandwidth_s = _average_seconds(
+        _run_all_to_all_once,
+        bandwidth_bytes,
+        args.warmup_iters,
+        args.iters,
+    )
+    return {
+        "bandwidth_gbps": _all_to_all_bandwidth(bandwidth_bytes, bandwidth_s),
+        "latency_us": latency_s * MICROSECONDS,
+    }
+
+
 def _average_seconds(step, size_bytes, warmup_iters, measure_iters):
     _run_iters(step, size_bytes, warmup_iters)
     dist.barrier()
@@ -133,6 +157,12 @@ def _run_all_reduce_once(size_bytes):
     dist.all_reduce(tensor)
 
 
+def _run_all_to_all_once(size_bytes):
+    tensor = torch.ones(size_bytes, dtype=torch.uint8, device=CUDA_DEVICE)
+    output = torch.empty_like(tensor)
+    dist.all_to_all_single(output, tensor)
+
+
 def _max_seconds_across_ranks(avg_seconds):
     value = torch.tensor([avg_seconds], dtype=torch.float64, device=CUDA_DEVICE)
     dist.all_reduce(value, op=dist.ReduceOp.MAX)
@@ -147,6 +177,20 @@ def _all_reduce_bandwidth(size_bytes, avg_seconds):
     world_size = dist.get_world_size()
     effective_bytes = 2.0 * (world_size - 1) / world_size * size_bytes
     return _bytes_to_gbps(effective_bytes, avg_seconds)
+
+
+def _all_to_all_bandwidth(size_bytes, avg_seconds):
+    world_size = dist.get_world_size()
+    effective_bytes = (world_size - 1) / world_size * size_bytes
+    return _bytes_to_gbps(effective_bytes, avg_seconds)
+
+
+def _aligned_collective_bytes(size_bytes):
+    world_size = dist.get_world_size()
+    remainder = size_bytes % world_size
+    if remainder == 0:
+        return size_bytes
+    return size_bytes + world_size - remainder
 
 
 def _require_world_size(expected, collective):

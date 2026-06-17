@@ -97,13 +97,15 @@ class NvidiaProfileBackend(ProfileBackend):
             else {}
         )
         group_sizes = _resolve_group_sizes(all_reduce_group_sizes, ngpus)
-        all_reduce_profiles = self._collect_all_reduce_profiles(group_sizes)
+        all_reduce_profiles = self._collect_group_size_profiles("all_reduce", group_sizes)
+        all_to_all_profiles = self._collect_group_size_profiles("all_to_all", group_sizes)
         result = {
             "p2p": _legacy_p2p_measurement(p2p_classes)
             if p2p_classes
             else self._collect_collective("p2p", _build_torchrun_command("p2p", ngpus)),
             "all_reduce": all_reduce_profiles[max(all_reduce_profiles)],
             "all_reduce_profiles": all_reduce_profiles,
+            "all_to_all_profiles": all_to_all_profiles,
         }
         if p2p_classes:
             result["p2p_classes"] = p2p_classes
@@ -127,16 +129,16 @@ class NvidiaProfileBackend(ProfileBackend):
             )
         return measurements
 
-    def _collect_all_reduce_profiles(self, group_sizes):
+    def _collect_group_size_profiles(self, collective, group_sizes):
         profiles = {}
         for group_size in group_sizes:
             measurement = self._collect_collective(
-                "all_reduce",
-                _build_torchrun_command("all_reduce", group_size),
+                collective,
+                _build_torchrun_command(collective, group_size),
             )
             profiles[group_size] = _with_metadata(
                 measurement,
-                {"collective": "all_reduce", "group_size": group_size},
+                {"collective": collective, "group_size": group_size},
             )
         return profiles
 

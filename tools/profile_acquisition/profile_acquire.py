@@ -206,8 +206,16 @@ def _collective_measurements_to_patch(measurements):
         "interconnect.intra_node.all_reduce_latency_us": all_reduce["latency_us"],
     }
     patch.update(_p2p_classes_to_patch(measurements.get("p2p_classes", {})))
-    patch.update(_all_reduce_profiles_to_patch(measurements.get("all_reduce_profiles", {})))
+    for collective, profiles in _collective_profile_measurements(measurements):
+        patch.update(_collective_profiles_to_patch(collective, profiles))
     return patch
+
+
+def _collective_profile_measurements(measurements):
+    return (
+        ("all_reduce", measurements.get("all_reduce_profiles", {})),
+        ("all_to_all", measurements.get("all_to_all_profiles", {})),
+    )
 
 
 def _parse_group_sizes(raw_value):
@@ -238,12 +246,12 @@ def _p2p_classes_to_patch(p2p_classes):
     return patch
 
 
-def _all_reduce_profiles_to_patch(all_reduce_profiles):
+def _collective_profiles_to_patch(collective, profiles):
     patch = {}
-    for group_size, measurement in all_reduce_profiles.items():
+    for group_size, measurement in profiles.items():
         prefix = (
             "interconnect.intra_node.collective_profiles."
-            f"all_reduce.group_size_{group_size}"
+            f"{collective}.group_size_{group_size}"
         )
         patch[f"{prefix}.bandwidth_gbps"] = measurement.metrics["bandwidth_gbps"]
         patch[f"{prefix}.latency_us"] = measurement.metrics["latency_us"]

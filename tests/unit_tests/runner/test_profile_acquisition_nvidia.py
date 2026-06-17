@@ -167,6 +167,8 @@ def _topology_aware_collective_outputs():
         _collective_process('p2p-sys', bandwidth_gbps=95.0, latency_us=11.4),
         _collective_process('ar2', bandwidth_gbps=154.0, latency_us=8.5),
         _collective_process('ar4', bandwidth_gbps=121.0, latency_us=13.2),
+        _collective_process('a2a2', bandwidth_gbps=88.0, latency_us=10.5),
+        _collective_process('a2a4', bandwidth_gbps=72.0, latency_us=17.5),
     ]
 
 
@@ -204,15 +206,23 @@ def test_nvidia_backend_collect_collectives_builds_pair_class_and_group_size_run
     sys_call = run_mock.call_args_list[2]
     ar2_call = run_mock.call_args_list[3]
     ar4_call = run_mock.call_args_list[4]
+    a2a2_call = run_mock.call_args_list[5]
+    a2a4_call = run_mock.call_args_list[6]
     assert '--nproc_per_node=2' in pix_call.args[0]
     assert '--nproc_per_node=2' in ar2_call.args[0]
     assert '--nproc_per_node=4' in ar4_call.args[0]
+    assert '--nproc_per_node=2' in a2a2_call.args[0]
+    assert '--nproc_per_node=4' in a2a4_call.args[0]
+    assert '--collective' in a2a2_call.args[0]
+    assert 'all_to_all' in a2a2_call.args[0]
     assert pix_call.kwargs['env']['CUDA_VISIBLE_DEVICES'] == '0,1'
     assert sys_call.kwargs['env']['CUDA_VISIBLE_DEVICES'] == '0,2'
     assert measurements['p2p_classes']['pix'].metrics['bandwidth_gbps'] == 210.0
     assert measurements['p2p_classes']['sys'].metadata['gpu_pair'] == [0, 2]
     assert measurements['all_reduce_profiles'][2].metrics['latency_us'] == 8.5
     assert measurements['all_reduce_profiles'][4].metrics['bandwidth_gbps'] == 121.0
+    assert measurements['all_to_all_profiles'][2].metrics['latency_us'] == 10.5
+    assert measurements['all_to_all_profiles'][4].metrics['bandwidth_gbps'] == 72.0
     assert measurements['p2p'].metrics['bandwidth_gbps'] == 95.0
     assert measurements['all_reduce'].metrics['latency_us'] == 13.2
 

@@ -14,6 +14,12 @@ def test_parse_args_rejects_unknown_collective():
         parse_args(['--collective', 'invalid'])
 
 
+def test_parse_args_accepts_all_to_all_collective():
+    args = parse_args(['--collective', 'all_to_all'])
+
+    assert args.collective == 'all_to_all'
+
+
 def test_main_prints_key_value_metrics():
     output = StringIO()
     with patch(
