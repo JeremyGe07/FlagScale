@@ -818,6 +818,73 @@ def test_time_cost_dense_ep_does_not_reduce_compute_or_dp_cost(tmp_path):
     )
 
 
+def test_experimental_moe_time_cost_does_not_change_dense_model(tmp_path):
+    legacy_config = build_autotuner_config(
+        tmp_path / "legacy",
+        chip_profile={"profile": _build_chip_profile()},
+    )
+    experimental_config = build_autotuner_config(
+        tmp_path / "experimental",
+        chip_profile={"profile": _build_chip_profile()},
+        algo={"name": "grid", "moe_time_cost_model": "experimental_v1"},
+    )
+
+    strategy = _build_strategy(micro_batch_size=4, acc_step=8)
+
+    assert _estimate_time_cost(strategy, experimental_config) == _estimate_time_cost(
+        strategy,
+        legacy_config,
+    )
+
+
+def test_experimental_moe_time_cost_rewards_larger_microbatch(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+        algo={
+            "name": "grid",
+            "moe_time_cost_model": "experimental_v1",
+            "moe_time_cost_model_options": {
+                "min_microbatch_efficiency": 0.5,
+                "microbatch_reference_tokens": 4096,
+            },
+        },
+        model_overrides={"num_experts": 8, "moe_router_topk": 2, "moe_layer_freq": 1},
+    )
+    small_mbs = _build_strategy(micro_batch_size=2, acc_step=16)
+    large_mbs = _build_strategy(micro_batch_size=4, acc_step=8)
+
+    small = _estimate_time_cost(small_mbs, config)
+    large = _estimate_time_cost(large_mbs, config)
+
+    assert large["time_breakdown"]["compute_ms"] < small["time_breakdown"]["compute_ms"]
+
+
+def test_experimental_moe_time_cost_counts_shared_expert_compute(tmp_path):
+    base_model = {"num_experts": 8, "moe_router_topk": 2, "moe_layer_freq": 1}
+    no_shared = build_autotuner_config(
+        tmp_path / "no-shared",
+        chip_profile={"profile": _build_chip_profile()},
+        algo={"name": "grid", "moe_time_cost_model": "experimental_v1"},
+        model_overrides=base_model,
+    )
+    with_shared = build_autotuner_config(
+        tmp_path / "with-shared",
+        chip_profile={"profile": _build_chip_profile()},
+        algo={"name": "grid", "moe_time_cost_model": "experimental_v1"},
+        model_overrides={
+            **base_model,
+            "moe_shared_expert_intermediate_size": 4096,
+        },
+    )
+
+    strategy = _build_strategy()
+
+    assert _estimate_time_cost(strategy, with_shared)["time_total_ms"] > (
+        _estimate_time_cost(strategy, no_shared)["time_total_ms"]
+    )
+
+
 def test_time_cost_moe_ep_adds_explicit_expert_comm_penalty(tmp_path):
     config = build_autotuner_config(
         tmp_path,

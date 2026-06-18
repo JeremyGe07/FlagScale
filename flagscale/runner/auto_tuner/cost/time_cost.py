@@ -22,6 +22,9 @@ PP_TRANSFERS_PER_MICROBATCH = 2
 MOE_ALLTOALL_EXCHANGES = 2.0
 MOE_ALLGATHER_EXCHANGES = 4.0
 DEFAULT_MOE_ROUTER_TOPK = 1.0
+MOE_SHARED_EXPERT_FLOPS_FACTOR = 4.0
+DEFAULT_MIN_MICROBATCH_EFFICIENCY = 0.6
+DEFAULT_MICROBATCH_REFERENCE_TOKENS = 8192.0
 RECOMPUTE_FULL_FACTOR = 0.3
 RECOMPUTE_SELECTIVE_FACTOR = 0.15
 BLOCK_RECOMPUTE_FACTOR = 1.1
@@ -379,7 +382,10 @@ def _segment_strategy(strategy, num_layers):
 
 
 def _estimate_compute_ms(profile):
-    return _estimate_dense_compute_ms(profile) + _estimate_expert_compute_ms(profile)
+    compute_ms = _estimate_dense_compute_ms(profile) + _estimate_expert_compute_ms(profile)
+    if _use_experimental_moe_time_cost(profile):
+        compute_ms /= _microbatch_efficiency(profile)
+    return compute_ms
 
 
 def _estimate_dense_compute_ms(profile):
@@ -401,10 +407,26 @@ def _estimate_expert_compute_ms(profile):
     model = profile["model"]
     if not _is_moe_model(model):
         return 0.0
+    return _estimate_routed_expert_compute_ms(profile) + _estimate_shared_expert_compute_ms(
+        profile
+    )
+
+
+def _estimate_routed_expert_compute_ms(profile):
     strategy = profile["runtime"]["strategy"]
+    model = profile["model"]
+    total_flops = _routed_expert_flops(profile)
+    parallel_factor = _dense_parallel_factor(strategy) * _effective_expert_parallel_size(
+        strategy, model
+    )
+    return _flops_to_ms(total_flops / parallel_factor, _effective_tflops(profile))
+
+
+def _routed_expert_flops(profile):
+    model = profile["model"]
     hidden_size = float(model["hidden_size"])
     moe_hidden_size = float(model.get("moe_ffn_hidden_size", hidden_size * 4.0))
-    total_flops = (
+    return (
         _tokens_per_iteration(profile)
         * _stage_moe_layers(profile)
         * hidden_size
@@ -412,10 +434,29 @@ def _estimate_expert_compute_ms(profile):
         * float(model.get("moe_router_topk", DEFAULT_MOE_ROUTER_TOPK))
         * MOE_EXPERT_FLOPS_FACTOR
     )
-    parallel_factor = _dense_parallel_factor(strategy) * _effective_expert_parallel_size(
-        strategy, model
-    )
+
+
+def _estimate_shared_expert_compute_ms(profile):
+    if not _use_experimental_moe_time_cost(profile):
+        return 0.0
+    total_flops = _shared_expert_flops(profile)
+    parallel_factor = _dense_parallel_factor(profile["runtime"]["strategy"])
     return _flops_to_ms(total_flops / parallel_factor, _effective_tflops(profile))
+
+
+def _shared_expert_flops(profile):
+    model = profile["model"]
+    shared_size = float(model.get("moe_shared_expert_intermediate_size") or 0.0)
+    if shared_size <= 0.0:
+        return 0.0
+    hidden_size = float(model["hidden_size"])
+    return (
+        _tokens_per_iteration(profile)
+        * _stage_moe_layers(profile)
+        * hidden_size
+        * shared_size
+        * MOE_SHARED_EXPERT_FLOPS_FACTOR
+    )
 
 
 def _estimate_tp_comm_ms(profile):
@@ -589,6 +630,38 @@ def _dense_parallel_factor(strategy):
 
 def _is_moe_model(model):
     return int(model.get("num_experts") or 0) > 1
+
+
+def _use_experimental_moe_time_cost(profile):
+    return _is_moe_model(profile["model"]) and _moe_time_cost_model(profile) == "experimental_v1"
+
+
+def _moe_time_cost_model(profile):
+    return profile["runtime"].get("moe_time_cost_model", "legacy")
+
+
+def _microbatch_efficiency(profile):
+    options = profile["runtime"].get("moe_time_cost_model_options", {})
+    min_efficiency = float(
+        options.get("min_microbatch_efficiency", DEFAULT_MIN_MICROBATCH_EFFICIENCY)
+    )
+    reference_tokens = float(
+        options.get("microbatch_reference_tokens", DEFAULT_MICROBATCH_REFERENCE_TOKENS)
+    )
+    if not 0.0 < min_efficiency <= 1.0:
+        raise ValueError("min_microbatch_efficiency must be in (0, 1].")
+    if reference_tokens <= 0.0:
+        raise ValueError("microbatch_reference_tokens must be positive.")
+    local_tokens = _local_microbatch_tokens(profile)
+    saturation = local_tokens / (local_tokens + reference_tokens)
+    return min_efficiency + ((1.0 - min_efficiency) * saturation)
+
+
+def _local_microbatch_tokens(profile):
+    strategy = profile["runtime"]["strategy"]
+    model = profile["model"]
+    parallel = strategy["tensor_model_parallel_size"] * strategy["context_parallel_size"]
+    return (strategy["micro_batch_size"] * model["seq_length"]) / parallel
 
 
 def _stage_moe_layers(profile):
