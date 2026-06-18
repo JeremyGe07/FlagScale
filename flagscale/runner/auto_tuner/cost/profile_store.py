@@ -26,6 +26,7 @@ OPTIONAL_MOE_MODEL_FIELDS = (
     "moe_router_topk",
     "moe_token_dispatcher_type",
     "moe_ffn_hidden_size",
+    "moe_shared_expert_intermediate_size",
 )
 REQUIRED_STRATEGY_FIELDS = (
     "data_parallel_size",
@@ -102,6 +103,9 @@ def _build_runtime_base(config):
     experiment = _require_mapping(config, "experiment", "config")
     runner = _require_mapping(experiment, "runner", "config.experiment")
     auto_tuner = _require_mapping(experiment, "auto_tuner", "config.experiment")
+    moe_time_cost_model, moe_time_cost_model_options = _build_moe_time_cost_settings(
+        auto_tuner
+    )
     runner_nnodes = _read_positive_int(
         runner,
         "nnodes",
@@ -136,7 +140,27 @@ def _build_runtime_base(config):
         "nnodes": nnodes,
         "nproc_per_node": nproc_per_node,
         "world_size": world_size,
+        "moe_time_cost_model": moe_time_cost_model,
+        "moe_time_cost_model_options": moe_time_cost_model_options,
     }
+
+
+def _build_moe_time_cost_settings(auto_tuner):
+    algo = auto_tuner.get("algo", {})
+    if not isinstance(algo, dict):
+        raise ValueError("config.experiment.auto_tuner.algo must be a mapping.")
+    mode = algo.get("moe_time_cost_model", "legacy")
+    options = algo.get("moe_time_cost_model_options", {})
+    if not isinstance(mode, str) or not mode:
+        raise ValueError(
+            "config.experiment.auto_tuner.algo.moe_time_cost_model must be a string."
+        )
+    if not isinstance(options, dict):
+        raise ValueError(
+            "config.experiment.auto_tuner.algo.moe_time_cost_model_options "
+            "must be a mapping."
+        )
+    return mode, deepcopy(options)
 
 
 def _build_strategy_profile(strategy, path):

@@ -307,6 +307,53 @@ def test_build_cost_profile_returns_normalized_sections(tmp_path):
     }
 
 
+def test_cost_profile_defaults_to_legacy_moe_time_cost_model(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+        model_overrides={"num_experts": 8, "moe_router_topk": 2, "moe_layer_freq": 1},
+    )
+
+    profile = build_cost_profile(config, _build_strategy())
+
+    assert profile["runtime"]["moe_time_cost_model"] == "legacy"
+    assert profile["runtime"]["moe_time_cost_model_options"] == {}
+
+
+def test_cost_profile_reads_experimental_moe_time_cost_options(tmp_path):
+    from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
+
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+        algo={
+            "name": "grid",
+            "moe_time_cost_model": "experimental_v1",
+            "moe_time_cost_model_options": {
+                "min_microbatch_efficiency": 0.55,
+                "microbatch_reference_tokens": 8192,
+            },
+        },
+        model_overrides={
+            "num_experts": 8,
+            "moe_router_topk": 2,
+            "moe_layer_freq": 1,
+            "moe_shared_expert_intermediate_size": 4096,
+        },
+    )
+
+    profile = build_cost_profile(config, _build_strategy())
+
+    assert profile["runtime"]["moe_time_cost_model"] == "experimental_v1"
+    assert profile["runtime"]["moe_time_cost_model_options"] == {
+        "min_microbatch_efficiency": 0.55,
+        "microbatch_reference_tokens": 8192,
+    }
+    assert profile["model"]["moe_shared_expert_intermediate_size"] == 4096
+
+
 def test_build_cost_profile_normalizes_inline_attached_profile_defaults(tmp_path):
     from flagscale.runner.auto_tuner.cost.profile_store import build_cost_profile
 
