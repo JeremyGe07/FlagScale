@@ -73,6 +73,9 @@ def _build_strategy(*, strategy_idx: int, task: CalibrationTask) -> CalibrationS
         recompute_method=task.recompute_method,
         recompute_granularity=task.recompute_granularity,
         recompute_num_layers=task.recompute_num_layers,
+        sequence_parallel=task.sequence_parallel,
+        use_distributed_optimizer=task.use_distributed_optimizer,
+        context_parallel_size=task.context_parallel_size,
     )
 
 

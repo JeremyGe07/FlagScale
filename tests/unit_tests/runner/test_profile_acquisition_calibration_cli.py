@@ -9,6 +9,7 @@ from flagscale.runner.auto_tuner.profile_acquisition.models import CalibrationSt
 from flagscale.runner.auto_tuner.profile_acquisition.calibration_cli import (
     build_calibration_runtime_strategy,
     calibration_task_timeout_seconds,
+    _calibration_status,
 )
 from tools.profile_acquisition.profile_acquire import main as profile_acquire_main
 
@@ -139,6 +140,86 @@ def test_profile_acquire_cli_runs_dense_template_calibration(tmp_path, capsys):
     assert f'Derived profile path: {profile_out}' in stdout
 
 
+def test_profile_acquire_cli_runs_file_template_calibration(tmp_path, capsys):
+    profile_in = tmp_path / 'nvidia_l20.yaml'
+    profile_out = tmp_path / 'nvidia_l20.near_boundary.yaml'
+    template_file = tmp_path / 'near_boundary_template.yaml'
+    config_dir = tmp_path / 'conf'
+    config_dir.mkdir()
+    (config_dir / 'train_auto_tuner.yaml').write_text('defaults: []\n')
+    template_file.write_text('name: near-boundary\ntasks: []\n')
+    _write_profile_yaml(profile_in)
+
+    summary = SimpleNamespace(
+        template_name='near-boundary',
+        sample_count=0,
+        success_count=0,
+        oom_count=0,
+        other_failure_count=0,
+        oom_recall=0.0,
+        false_prune_count=0,
+        reserved_memory_bias_mb=0.0,
+        peak_activation_bias_mb=0.0,
+    )
+    result = SimpleNamespace(summary=summary, profile_patch={})
+
+    with patch(
+        'tools.profile_acquisition.profile_acquire.run_profile_calibration',
+        return_value=result,
+    ) as run_mock:
+        exit_code = profile_acquire_main(
+            [
+                '--profile-in',
+                str(profile_in),
+                '--profile-out',
+                str(profile_out),
+                '--run-calibration',
+                '--calibration-template-file',
+                str(template_file),
+                '--config-path',
+                str(config_dir),
+                '--config-name',
+                'train_auto_tuner',
+            ]
+        )
+
+    stdout = capsys.readouterr().out
+    assert run_mock.call_args.kwargs['template_file'] == str(template_file)
+    assert run_mock.call_args.kwargs['template_name'] is None
+    assert exit_code == 0
+    assert 'template=near-boundary' in stdout
+
+
+def test_profile_acquire_cli_run_calibration_rejects_two_template_sources(tmp_path):
+    profile_in = tmp_path / 'nvidia_l20.yaml'
+    profile_out = tmp_path / 'nvidia_l20.near_boundary.yaml'
+    template_file = tmp_path / 'near_boundary_template.yaml'
+    config_dir = tmp_path / 'conf'
+    config_dir.mkdir()
+    (config_dir / 'train_auto_tuner.yaml').write_text('defaults: []\n')
+    template_file.write_text('name: near-boundary\ntasks: []\n')
+    _write_profile_yaml(profile_in)
+
+    with pytest.raises(ValueError, match='exactly one'):
+        profile_acquire_main(
+            [
+                '--profile-in',
+                str(profile_in),
+                '--profile-out',
+                str(profile_out),
+                '--run-calibration',
+                '--calibration-template',
+                'dense-8',
+                '--calibration-template-file',
+                str(template_file),
+                '--config-path',
+                str(config_dir),
+                '--config-name',
+                'train_auto_tuner',
+            ]
+        )
+
+
 def test_profile_acquire_cli_run_calibration_requires_existing_config_yaml(tmp_path):
     profile_in = tmp_path / 'nvidia_l20.yaml'
     profile_out = tmp_path / 'nvidia_l20.dense_warmstart.yaml'
@@ -243,3 +324,28 @@ def test_build_calibration_runtime_strategy_rejects_indivisible_acc_step(
 def test_calibration_task_timeout_seconds_gives_first_task_grace():
     assert calibration_task_timeout_seconds(max_time_per_task=240, strategy_idx=1) == 480
     assert calibration_task_timeout_seconds(max_time_per_task=240, strategy_idx=2) == 240
+
+
+def test_calibration_status_detects_nccl_oom_in_detail_logs(tmp_path):
+    log_dir = tmp_path / 'logs'
+    detail_dir = log_dir / 'details' / 'host_0_localhost' / 'attempt_0' / '0'
+    detail_dir.mkdir(parents=True)
+    (detail_dir / 'stdout.log').write_text(
+        "NCCL WARN Cuda failure 2 'out of memory'\n",
+        encoding='utf-8',
+    )
+
+    status = _calibration_status({'error': 'DistBackendError'}, log_dir=log_dir)
+
+    assert status == 'oom'
+
+
+def test_calibration_status_keeps_non_memory_errors_as_other_failure(tmp_path):
+    log_dir = tmp_path / 'logs'
+    detail_dir = log_dir / 'details' / 'host_0_localhost' / 'attempt_0' / '0'
+    detail_dir.mkdir(parents=True)
+    (detail_dir / 'stderr.log').write_text("NameError: name 'warnings' is not defined\n")
+
+    status = _calibration_status({'error': 'ChildFailedError'}, log_dir=log_dir)
+
+    assert status == 'other_failure'

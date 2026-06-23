@@ -1,5 +1,8 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
+
+from omegaconf import OmegaConf
 
 LOW_MICRO_BATCH_SIZE: Final[int] = 1
 HIGH_MICRO_BATCH_SIZE: Final[int] = 8
@@ -29,6 +32,9 @@ class CalibrationTask:
     recompute_method: str | None = None
     recompute_granularity: str | None = None
     recompute_num_layers: int | None = None
+    sequence_parallel: bool | None = None
+    use_distributed_optimizer: bool | None = None
+    context_parallel_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -151,8 +157,75 @@ def get_calibration_template(name: str) -> CalibrationTemplate:
         raise KeyError(f"Unknown calibration template: {name}") from exc
 
 
+def load_calibration_template_file(path: str | Path) -> CalibrationTemplate:
+    payload = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    if not isinstance(payload, dict):
+        raise ValueError("Calibration template file must contain a mapping.")
+    name = _read_required(payload, "name", source="template")
+    tasks = _read_required(payload, "tasks", source="template")
+    if not isinstance(tasks, list):
+        raise ValueError("Calibration template field tasks must be a list.")
+    return CalibrationTemplate(
+        name=str(name),
+        tasks=tuple(_task_from_payload(task, index) for index, task in enumerate(tasks, 1)),
+    )
+
+
+def _task_from_payload(payload: object, index: int) -> CalibrationTask:
+    if not isinstance(payload, dict):
+        raise ValueError(f"Calibration task {index} must be a mapping.")
+    return CalibrationTask(
+        name=str(_read_required(payload, "name", source=f"task {index}")),
+        branch=str(_read_required(payload, "branch", source=f"task {index}")),
+        dp=_read_int(payload, "dp", source=f"task {index}"),
+        tp=_read_int(payload, "tp", source=f"task {index}"),
+        pp=_read_int(payload, "pp", source=f"task {index}"),
+        micro_batch_size=_read_int(payload, "micro_batch_size", source=f"task {index}"),
+        use_recompute=bool(_read_required(payload, "use_recompute", source=f"task {index}")),
+        expert_model_parallel_size=_read_optional_int(payload, "expert_model_parallel_size", 1),
+        recompute_method=_read_optional_str(payload, "recompute_method"),
+        recompute_granularity=_read_optional_str(payload, "recompute_granularity"),
+        recompute_num_layers=_read_optional_int(payload, "recompute_num_layers"),
+        sequence_parallel=_read_optional_bool(payload, "sequence_parallel"),
+        use_distributed_optimizer=_read_optional_bool(payload, "use_distributed_optimizer"),
+        context_parallel_size=_read_optional_int(payload, "context_parallel_size"),
+    )
+
+
+def _read_required(payload: dict, key: str, *, source: str) -> object:
+    if key not in payload:
+        raise ValueError(f"Calibration {source} is missing required field: {key}")
+    return payload[key]
+
+
+def _read_int(payload: dict, key: str, *, source: str) -> int:
+    return int(_read_required(payload, key, source=source))
+
+
+def _read_optional_int(payload: dict, key: str, default: int | None = None) -> int | None:
+    value = payload.get(key, default)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _read_optional_str(payload: dict, key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _read_optional_bool(payload: dict, key: str) -> bool | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    return bool(value)
+
+
 __all__ = [
     "CalibrationTask",
     "CalibrationTemplate",
     "get_calibration_template",
+    "load_calibration_template_file",
 ]

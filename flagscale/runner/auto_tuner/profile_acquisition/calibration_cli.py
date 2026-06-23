@@ -14,6 +14,7 @@ from flagscale.runner.auto_tuner.profile_acquisition.calibration_runner import (
 from flagscale.runner.auto_tuner.record.recorder import Recorder
 from flagscale.runner.auto_tuner.profile_acquisition.templates import (
     get_calibration_template,
+    load_calibration_template_file,
 )
 from flagscale.runner.runner_base import JobStatus
 from flagscale.runner.runner_train import SSHTrainRunner
@@ -21,10 +22,19 @@ from flagscale.runner.runner_train import SSHTrainRunner
 CALIBRATION_POLL_INTERVAL_SECONDS = 10
 CALIBRATION_STARTUP_WAIT_SECONDS = 3
 FIRST_TASK_TIMEOUT_GRACE_MULTIPLIER = 2
+OOM_LOG_MARKERS = (
+    "cuda out of memory",
+    "outofmemoryerror",
+    "cuda failure 2 'out of memory'",
+    "failed to cuda calloc",
+)
+LOG_SCAN_LIMIT_BYTES = 2_000_000
 
 
-def run_profile_calibration(*, profile_in, template_name, config_path, config_name):
-    template = get_calibration_template(template_name)
+def run_profile_calibration(
+    *, profile_in, template_name=None, template_file=None, config_path, config_name
+):
+    template = _load_template(template_name=template_name, template_file=template_file)
     return run_calibration(
         template=template,
         execute_task=build_calibration_executor(
@@ -34,6 +44,12 @@ def run_profile_calibration(*, profile_in, template_name, config_path, config_na
         ),
         gpu_memory_mb=read_profile_gpu_memory_mb(profile_in),
     )
+
+
+def _load_template(*, template_name, template_file):
+    if template_file is not None:
+        return load_calibration_template_file(template_file)
+    return get_calibration_template(template_name)
 
 
 def build_calibration_executor(*, profile_in, config_path, config_name):
@@ -248,22 +264,50 @@ def _read_subprocess_state(runner, strategy, saw_subprocess):
 
 def _build_calibration_payload(task, strategy, config):
     memory_cost = estimate_memory_cost(strategy, config)
+    log_dir = Path(task.train.system.logging.log_dir)
     return {
-        "status": _calibration_status(strategy),
+        "status": _calibration_status(strategy, log_dir=log_dir),
         "memory_model_mb": memory_cost["memory_total_mb"],
         "max_mem_mb": _max_mem_value(strategy),
         "performance_ms": strategy.get("performance"),
-        "log_path": str(task.train.system.logging.log_dir),
+        "log_path": str(log_dir),
         "error": strategy.get("error") or "",
     }
 
 
-def _calibration_status(strategy):
+def _calibration_status(strategy, *, log_dir=None):
     if strategy.get("max_mem") == "OOM":
+        return "oom"
+    if _contains_oom_marker(strategy.get("error") or ""):
+        return "oom"
+    if log_dir is not None and _log_dir_contains_oom(log_dir):
         return "oom"
     if strategy.get("error"):
         return "other_failure"
     return "success"
+
+
+def _log_dir_contains_oom(log_dir):
+    root = Path(log_dir)
+    if not root.exists():
+        return False
+    for path in root.rglob("*.log"):
+        if _file_contains_oom(path):
+            return True
+    return False
+
+
+def _file_contains_oom(path):
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")[-LOG_SCAN_LIMIT_BYTES:]
+    except OSError:
+        return False
+    return _contains_oom_marker(content)
+
+
+def _contains_oom_marker(content):
+    lowered = str(content).lower()
+    return any(marker in lowered for marker in OOM_LOG_MARKERS)
 
 
 def _max_mem_value(strategy):

@@ -40,6 +40,7 @@ def _parse_args(argv):
     parser.add_argument("--fit-memory-bias", action="store_true")
     parser.add_argument("--run-calibration", action="store_true")
     parser.add_argument("--calibration-template", choices=CALIBRATION_TEMPLATES)
+    parser.add_argument("--calibration-template-file")
     parser.add_argument("--config-path")
     parser.add_argument("--config-name")
     parser.add_argument("--measure-device-memory", action="store_true")
@@ -130,10 +131,18 @@ def _validate_profile_paths(args):
 
 
 def _validate_calibration_args(args):
-    if not args.calibration_template:
-        raise ValueError("--calibration-template is required for --run-calibration.")
+    template_sources = [args.calibration_template, args.calibration_template_file]
+    if sum(source is not None for source in template_sources) != 1:
+        raise ValueError(
+            "--run-calibration requires exactly one of "
+            "--calibration-template or --calibration-template-file."
+        )
     if not args.config_path or not args.config_name:
         raise ValueError("--config-path and --config-name are required for --run-calibration.")
+    if args.calibration_template_file and not Path(args.calibration_template_file).is_file():
+        raise ValueError(
+            f"--calibration-template-file does not exist: {args.calibration_template_file}"
+        )
     config_dir = Path(args.config_path)
     if not config_dir.is_dir():
         raise ValueError(f"--config-path does not exist: {config_dir}")
@@ -151,6 +160,7 @@ def _build_profile_patch(args):
         calibration_result = run_profile_calibration(
             profile_in=args.profile_in,
             template_name=args.calibration_template,
+            template_file=args.calibration_template_file,
             config_path=args.config_path,
             config_name=args.config_name,
         )

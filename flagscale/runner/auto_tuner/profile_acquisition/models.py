@@ -36,6 +36,9 @@ class CalibrationStrategy:
     recompute_method: str | None = None
     recompute_granularity: str | None = None
     recompute_num_layers: int | None = None
+    sequence_parallel: bool | None = None
+    use_distributed_optimizer: bool | None = None
+    context_parallel_size: int | None = None
 
 
 @dataclass(frozen=True)
