@@ -143,7 +143,10 @@ def _build_stage_memory(stage, config):
 def _build_segment_memory(segment, config):
     layer_count = segment.end - segment.start + 1
     strategy = _segment_strategy(segment.strategy, layer_count)
-    cost = _estimate_strategy_memory_cost(strategy, _config_with_num_layers(config, layer_count))
+    cost = _estimate_strategy_memory_cost(
+        strategy,
+        _config_with_layer_span(config, segment.start, layer_count),
+    )
     return {
         "start": segment.start,
         "end": segment.end,
@@ -356,10 +359,33 @@ def _peak_combined_stage_breakdown(plan_breakdown):
     return deepcopy(DEFAULT_MEMORY_BREAKDOWN)
 
 
-def _config_with_num_layers(config, num_layers):
+def _config_with_layer_span(config, start, num_layers):
     segment_config = deepcopy(config)
     segment_config.train.model.num_layers = num_layers
+    moe_layer_freq = config.train.model.get("moe_layer_freq", None)
+    if moe_layer_freq is not None:
+        sliced_freq = _slice_moe_layer_freq(
+            moe_layer_freq,
+            total_layers=int(config.train.model.num_layers),
+            start=start,
+            num_layers=num_layers,
+        )
+        segment_config.train.model.moe_layer_freq = repr(sliced_freq)
     return segment_config
+
+
+def _slice_moe_layer_freq(value, *, total_layers, start, num_layers):
+    normalized = normalize_moe_layer_freq(value, num_layers=total_layers)
+    if isinstance(normalized, int):
+        normalized = [
+            1 if index % normalized == 0 else 0 for index in range(total_layers)
+        ]
+    if not isinstance(normalized, list):
+        return normalized
+    end = start + num_layers
+    if start < 0 or end > len(normalized):
+        raise ValueError("moe_layer_freq segment span exceeds model layer count")
+    return normalized[start:end]
 
 
 def _segment_strategy(strategy, num_layers):
