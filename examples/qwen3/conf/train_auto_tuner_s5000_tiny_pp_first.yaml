@@ -1,0 +1,20 @@
+defaults:
+  - train_auto_tuner_s5000_tiny_baseline
+  - _self_
+
+experiment:
+  exp_name: qwen3-legacy-s5000-tiny-pp-first
+  exp_dir: outputs/s5000/qwen3_legacy_autotune_compare/pp_first
+  auto_tuner:
+    planner:
+      name: pp_first
+      assignment_solver: enumerate
+      partition_policy: layer_count_balanced
+      max_pp_candidates: 2
+      max_partitions_per_pp: 1
+      max_assignments_per_partition: 16
+      min_assignments_per_parallel_family: 0
+      topk_plans_for_short_run: 1
+      min_shortlist_per_parallel_family: 0
+      min_shortlist_per_pp_degree: 0
+      min_shortlist_per_partition_policy: 0

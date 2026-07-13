@@ -1,0 +1,36 @@
+defaults:
+  - _self_
+  - train: s5000_tiny
+
+experiment:
+  exp_name: qwen3-legacy-s5000-tiny
+  seed: 42
+  save_steps: 2
+  load: null
+  exp_dir: outputs/s5000/qwen3_legacy_tiny_tp1
+  ckpt_format: torch
+  task:
+    type: train
+    backend: megatron
+    entrypoint: flagscale/train/train_gpt.py
+  runner:
+    per_node_task: false
+    no_shared_fs: false
+    rdzv_backend: static
+    hostfile: null
+    nproc_per_node: 1
+  cmds:
+    before_start: ulimit -n 1048576
+  envs:
+    LOGLEVEL: "INFO"
+    MUSA_VISIBLE_DEVICES: "0"
+    CUDA_DEVICE_MAX_CONNECTIONS: "1"
+    NCCL_ALGO: Ring
+    MCCL_DEBUG: "WARN"
+    FLAGSCALE_MUSA_COMPAT: "1"
+
+action: test
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra

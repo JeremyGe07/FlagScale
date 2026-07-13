@@ -1,0 +1,43 @@
+defaults:
+  - train: s5000_tiny
+  - _self_
+
+experiment:
+  exp_name: qwen3-legacy-s5000-tp2-tiny
+  seed: 42
+  save_steps: 2
+  load: null
+  exp_dir: outputs/s5000/qwen3_legacy_tiny_tp2
+  ckpt_format: torch
+  task:
+    type: train
+    backend: megatron
+    entrypoint: flagscale/train/train_gpt.py
+  runner:
+    per_node_task: false
+    no_shared_fs: false
+    rdzv_backend: static
+    hostfile: null
+    nproc_per_node: 2
+  cmds:
+    before_start: ulimit -n 1048576
+  envs:
+    LOGLEVEL: "INFO"
+    MUSA_VISIBLE_DEVICES: "0,1"
+    CUDA_DEVICE_MAX_CONNECTIONS: "1"
+    NCCL_ALGO: Ring
+    MCCL_DEBUG: "WARN"
+    FLAGSCALE_MUSA_COMPAT: "1"
+
+action: test
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra
+
+train:
+  system:
+    tensor_model_parallel_size: 2
+    # The local PyTorch norm fallback used without TE/Apex does not implement
+    # sequence parallelism. Tensor parallelism itself remains real TP=2.
+    sequence_parallel: false

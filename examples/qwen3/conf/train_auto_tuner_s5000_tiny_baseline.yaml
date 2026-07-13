@@ -1,0 +1,62 @@
+defaults:
+  - train: s5000_tiny
+  - _self_
+
+experiment:
+  exp_name: qwen3-legacy-s5000-tiny-baseline
+  seed: 42
+  save_steps: 10000
+  load: null
+  exp_dir: outputs/s5000/qwen3_legacy_autotune_compare/baseline
+  ckpt_format: torch
+  task:
+    type: train
+    backend: megatron
+    entrypoint: flagscale/train/train_gpt.py
+  runner:
+    backend: torchrun
+    per_node_task: false
+    no_shared_fs: false
+    rdzv_backend: static
+    nnodes: 1
+    nproc_per_node: 2
+    hostfile: null
+  cmds:
+    before_start: ulimit -n 1048576
+  envs:
+    LOGLEVEL: "INFO"
+    MUSA_VISIBLE_DEVICES: "0,1"
+    CUDA_DEVICE_MAX_CONNECTIONS: "1"
+    NCCL_ALGO: Ring
+    MCCL_DEBUG: "WARN"
+    FLAGSCALE_MUSA_COMPAT: "1"
+  auto_tuner:
+    algo:
+      name: grid
+      priority: null
+    space:
+      data_parallel_size: [2, 1]
+      use_distributed_optimizer: [false]
+      tensor_model_parallel_size: [1, 2]
+      sequence_parallel: [false]
+      pipeline_model_parallel_size: [1, 2]
+      num_layers_per_virtual_pipeline_stage: [0]
+      context_parallel_size: [1]
+      expert_model_parallel_size: [1]
+      micro_batch_size: [1]
+      use_recompute: [false]
+    control:
+      run_best: false
+      interval: 2
+      max_time_per_task: 180
+      train_iters: 3
+
+train:
+  model:
+    global_batch_size: 2
+
+action: auto_tune
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra

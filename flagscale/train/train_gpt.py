@@ -2,6 +2,10 @@
 
 """Pretrain and SFT GPT."""
 
+from flagscale.train.musa_compat import enable_musa_compatibility
+
+enable_musa_compatibility()
+
 import torch
 
 from functools import partial

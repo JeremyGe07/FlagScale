@@ -803,18 +803,25 @@ def pretrain(
     args = get_args()
 
     # enable flagos:triton / vendor:cuda / reference:torch backend for transformer engine fl
-    if args.te_fl_prefer:
-        os.environ['TE_FL_PREFER'] = args.te_fl_prefer
-    if args.te_fl_per_op:
-        os.environ['TE_FL_PER_OP'] = args.te_fl_per_op
-    if args.te_fl_allow_vendors:
-        os.environ['TE_FL_ALLOW_VENDORS'] = args.te_fl_allow_vendors
-    if args.te_fl_deny_vendors:
-        os.environ['TE_FL_DENY_VENDORS'] = args.te_fl_deny_vendors
+    te_fl_prefer = getattr(args, "te_fl_prefer", None)
+    te_fl_per_op = getattr(args, "te_fl_per_op", None)
+    te_fl_allow_vendors = getattr(args, "te_fl_allow_vendors", None)
+    te_fl_deny_vendors = getattr(args, "te_fl_deny_vendors", None)
+    if te_fl_prefer:
+        os.environ["TE_FL_PREFER"] = te_fl_prefer
+    if te_fl_per_op:
+        os.environ["TE_FL_PER_OP"] = te_fl_per_op
+    if te_fl_allow_vendors:
+        os.environ["TE_FL_ALLOW_VENDORS"] = te_fl_allow_vendors
+    if te_fl_deny_vendors:
+        os.environ["TE_FL_DENY_VENDORS"] = te_fl_deny_vendors
 
     # enable flag gems to replace torch ops for distributed training
     # TODO(lixianduo): fix flag gems re-register error
-    if args.enable_flag_gems:
+    enable_flag_gems = getattr(
+        args, "enable_flag_gems", getattr(args, "use_flag_gems_replace_torch", False)
+    )
+    if enable_flag_gems:
         try:
             import flag_gems
         except ImportError:
