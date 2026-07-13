@@ -1,0 +1,86 @@
+defaults:
+  - _self_
+  - train: 30b_a3b_4xa800_baseline
+
+experiment:
+  exp_name: qwen3_30b_a3b_a800_baseline
+  seed: 42
+  save_steps: 10000
+  load: null
+  exp_dir: ${oc.env:FLAGSCALE_OUTPUT_ROOT,./outputs}/qwen3_30b_a3b_a800_baseline/default
+  ckpt_format: torch
+  task:
+    type: train
+    backend: megatron
+    entrypoint: ./flagscale/train/train_gpt.py
+  runner:
+    backend: torchrun
+    per_node_task: false
+    no_shared_fs: false
+    rdzv_backend: static
+    nnodes: 1
+    nproc_per_node: 4
+    hostfile: null
+  cmds:
+    before_start: |
+      ulimit -n 1048576
+      if [ -n "$CONDA_SH" ]; then
+        source "$CONDA_SH"
+      else
+        source "$HOME/miniconda3/etc/profile.d/conda.sh"
+      fi
+      if [ -n "$FLAGSCALE_TRAIN_ENV" ]; then
+        conda activate "$FLAGSCALE_TRAIN_ENV"
+      else
+        conda activate flagscale-train
+      fi
+      export WANDB_MODE=offline
+  envs:
+    LOGLEVEL: "INFO"
+    CUDA_VISIBLE_DEVICES: "0,1,2,3"
+    CUDA_DEVICE_MAX_CONNECTIONS: 1
+    NCCL_SOCKET_IFNAME: lo
+    NCCL_IB_DISABLE: 1
+    NCCL_IB_CUDA_SUPPORT: 1
+    NCCL_IB_GID_INDEX: 0
+    NCCL_DEBUG: INFO
+    OMP_NUM_THREADS: 4
+    GLOO_SOCKET_IFNAME: lo
+    WANDB_MODE: offline
+  auto_tuner:
+    algo:
+      name: grid
+      chip_aware_scoring: false
+      use_profiled_time_cost: false
+    space:
+      data_parallel_size: auto
+      use_distributed_optimizer: auto
+      tensor_model_parallel_size: [1, 2, 4]
+      expert_model_parallel_size: [1, 2, 4]
+      sequence_parallel: auto
+      pipeline_model_parallel_size: auto
+      num_layers_per_virtual_pipeline_stage: auto
+      context_parallel_size: [1]
+      micro_batch_size: auto
+      use_recompute: auto
+      recompute_method: auto
+      recompute_granularity: auto
+      recompute_num_layers: auto
+    control:
+      run_best: false
+      max_time_per_task: 7200
+      train_iters: 3
+    memory_model:
+      model_name: default
+      gpu_memory: 80000
+      gpu_utilization: [0.5, 0.9]
+    platform: {}
+    nnodes: ${experiment.runner.nnodes}
+    nproc_per_node: ${experiment.runner.nproc_per_node}
+    cards: 4
+
+action: auto_tune
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra

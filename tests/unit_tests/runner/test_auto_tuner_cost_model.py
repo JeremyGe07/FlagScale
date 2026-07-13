@@ -574,6 +574,26 @@ def test_memory_cost_reuses_megatron_moe_layer_freq_parsing(tmp_path):
     assert args.moe_layer_freq == [0, 1, 1, 1] * 7
 
 
+def test_memory_cost_slices_moe_layer_freq_for_pipeline_segments(tmp_path):
+    config = build_autotuner_config(
+        tmp_path,
+        chip_profile={"profile": _build_chip_profile()},
+        model_overrides={
+            "num_layers": 4,
+            "ffn_hidden_size": 4096,
+            "moe_ffn_hidden_size": 1024,
+            "num_experts": 8,
+            "moe_router_topk": 2,
+            "moe_layer_freq": "[0]+[1]*3",
+        },
+    )
+    strategy = _build_strategy(pipeline_model_parallel_size=2)
+
+    result = _estimate_memory_cost(strategy, config)
+
+    assert result["memory_breakdown"]["plan"]["stages"][0]["segments"][0]["layer_count"] == 2
+
+
 def test_memory_cost_estimator_does_not_print_to_stdout(tmp_path, capsys):
     config = build_autotuner_config(
         tmp_path,

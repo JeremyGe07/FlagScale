@@ -169,8 +169,6 @@ def convert_config_to_megatron_args(config, strategy):
     _ensure_megatron_path()
     from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
 
-    print(f"{strategy=}")
-
     args = SimpleNamespace()
     flagscale_args = config.train.model
     args.hidden_size = flagscale_args.hidden_size
