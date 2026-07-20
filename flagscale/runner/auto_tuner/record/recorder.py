@@ -51,19 +51,13 @@ class Recorder:
                 strategy["performance"] = None
                 strategy["max_mem"] = "OOM"
                 strategy["error"] = "|".join(list(errors))
-
-            # If task is stopped by autotuner, task may not be failed,just hang or too slow.
-            elif self.cur_strategy.get("stopped_by_tuner", False):
-                performace = self.grep_performance(peformance_path, self.metric)
-                strategy["performance"] = performace
-                strategy["max_mem"] = self.grep_max_memory(host_path)
-                strategy["error"] = None
-
-            # Task failed and the code may have logical errors
             else:
-                # HACK: record the performance when task exits in the last allreduce of training
-                performace = self.grep_performance(peformance_path, self.metric)
-                strategy["performance"] = performace
+                # A partial timing is not a valid tuning result. In particular, a
+                # task can print its first iteration before numerical validation
+                # fails on the following invocation. Keep the diagnostics and
+                # memory observation, but do not let that timing affect best-task
+                # selection or history-based pruning.
+                strategy["performance"] = None
                 strategy["max_mem"] = self.grep_max_memory(host_path)
                 strategy["error"] = "|".join(list(errors))
 
@@ -258,6 +252,11 @@ class Recorder:
             raise ValueError(f"The path do not exist: {path}")
 
         oom = "out of memory"
+        non_finite_metric = re.compile(
+            r"\b(?:lm loss|grad norm|params norm):\s*(?:nan|[+-]?inf)\b",
+            re.IGNORECASE,
+        )
+        nan_iterations = re.compile(r"number of nan iterations:\s*[1-9]\d*", re.IGNORECASE)
         errors_info = set()
         for item in os.listdir(path):
             if not item.startswith("host_") and not item.endswith(".output"):
@@ -270,11 +269,14 @@ class Recorder:
                     except UnicodeDecodeError:
                         continue
                     error = re.findall(pattern, line, re.IGNORECASE)
-                    if error:
-                        if oom in line:
+                    numerical_error = non_finite_metric.search(line) or nan_iterations.search(line)
+                    if error or numerical_error:
+                        if oom in line.lower():
                             errors_info.add("OOM")
                             errors_info.add(line)
                         else:
+                            if numerical_error:
+                                errors_info.add("NUMERICAL_ERROR")
                             errors_info.add(line)
 
         self.logger.info(f"task_{self.cur_strategy['idx']} error: {errors_info}")
@@ -290,18 +292,36 @@ class Recorder:
         if self.sorted_order == "ascend":
             sorted_history = sorted(
                 no_pruned_history,
-                key=lambda x: (x["performance"] if x["performance"] is not None else float("inf")),
+                key=lambda x: (
+                    float(x.get("performance"))
+                    if self.has_valid_performance(x)
+                    else float("inf")
+                ),
             )
         elif self.sorted_order == "descend":
             sorted_history = sorted(
                 no_pruned_history,
-                key=lambda x: (x["performance"] if x["performance"] is not None else float("-inf")),
+                key=lambda x: (
+                    float(x.get("performance"))
+                    if self.has_valid_performance(x)
+                    else float("-inf")
+                ),
                 reverse=True,
             )
         else:
             raise ValueError(f"The sorted order {self.sorted_order} is not supported.")
         assert sorted_history is not None
         return sorted_history
+
+    @staticmethod
+    def has_valid_performance(strategy):
+        """Return whether a strategy has a rankable, error-free measurement."""
+        if strategy.get("error"):
+            return False
+        try:
+            return bool(np.isfinite(float(strategy.get("performance"))))
+        except (TypeError, ValueError):
+            return False
 
     def to_str(self, v):
         if v is None or (isinstance(v, float) and np.isnan(v)):
@@ -355,7 +375,11 @@ class Recorder:
         )
         for c in df.columns:
             df[c] = df[c].map(self.parse_value)
-        return df.to_dict(orient="records")
+        history = df.to_dict(orient="records")
+        for strategy in history:
+            if not self.has_valid_performance(strategy):
+                strategy["performance"] = None
+        return history
 
 
 class ServeRecorder(Recorder):

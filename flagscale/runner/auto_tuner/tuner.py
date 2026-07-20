@@ -477,8 +477,10 @@ class AutoTuner:
 
     def get_best(self):
         sorted_history = self.recorder.sort(self.history)
-        if sorted_history and sorted_history[0] and sorted_history[0]["performance"]:
-            return sorted_history[0]
+        if sorted_history:
+            best_strategy = sorted_history[0]
+            if self.recorder.has_valid_performance(best_strategy):
+                return best_strategy
         return None
 
 

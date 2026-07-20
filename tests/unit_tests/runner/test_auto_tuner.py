@@ -341,6 +341,112 @@ def test_recorder_record_tolerates_missing_autotuner_platform(monkeypatch, tmp_p
     assert strategy["error"] is None
 
 
+def test_recorder_discards_partial_performance_when_task_has_error(monkeypatch, tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "auto_tuner": {},
+            }
+        }
+    )
+    recorder = Recorder(config)
+    strategy = {"idx": 7, "stopped_by_tuner": True}
+    task = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
+
+    monkeypatch.setattr(
+        recorder,
+        "get_all_performance_and_host_paths",
+        lambda current_task: (["perf.log"], "host_logs"),
+    )
+    monkeypatch.setattr(recorder, "grep_error", lambda path: {"RuntimeError: NaN"})
+    monkeypatch.setattr(recorder, "grep_max_memory", lambda path: 67.0)
+    monkeypatch.setattr(
+        recorder,
+        "grep_performance",
+        lambda paths, pattern: pytest.fail("failed tasks must not retain partial timing"),
+    )
+
+    recorder.record(task, strategy)
+
+    assert strategy["performance"] is None
+    assert strategy["max_mem"] == 67.0
+    assert strategy["error"] == "RuntimeError: NaN"
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "grad norm: nan",
+        "params norm: +inf",
+        "lm loss: -inf",
+        "number of nan iterations: 1",
+    ],
+)
+def test_recorder_detects_non_finite_training_metrics(tmp_path, metric):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "host_0_localhost.output").write_text(
+        f"iteration 1/1 | {metric} |\n",
+        encoding="utf-8",
+    )
+    config = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
+    recorder = Recorder(config)
+    recorder.cur_strategy = {"idx": 1}
+
+    errors = recorder.grep_error(logs)
+
+    assert "NUMERICAL_ERROR" in errors
+
+
+def test_recorder_sort_and_get_best_ignore_errorful_legacy_performance(tmp_path):
+    config = OmegaConf.create(
+        {
+            "experiment": {
+                "exp_dir": str(tmp_path),
+                "auto_tuner": {},
+            }
+        }
+    )
+    recorder = Recorder(config)
+    history = [
+        {"idx": 1, "performance": 1.0, "error": "ChildFailedError"},
+        {"idx": 2, "performance": "2.0", "error": None},
+        {"idx": 3, "performance": None, "error": None},
+        {"idx": 4, "performance": float("nan"), "error": None},
+    ]
+
+    sorted_history = recorder.sort(history)
+    tuner = AutoTuner.__new__(AutoTuner)
+    tuner.recorder = recorder
+    tuner.history = history
+
+    assert [strategy["idx"] for strategy in sorted_history] == [2, 1, 3, 4]
+    assert tuner.get_best()["idx"] == 2
+
+    tuner.history = [history[0]]
+    assert tuner.get_best() is None
+
+
+def test_recorder_read_invalidates_errorful_legacy_performance(tmp_path):
+    auto_tuner_dir = tmp_path / "auto_tuner"
+    auto_tuner_dir.mkdir()
+    (auto_tuner_dir / "history.csv").write_text(
+        "idx,performance,error\n"
+        "1,1.0,ChildFailedError\n"
+        "2,2.0,\n"
+        "3,nan,\n",
+        encoding="utf-8",
+    )
+    config = OmegaConf.create({"experiment": {"exp_dir": str(tmp_path)}})
+
+    history = Recorder(config).read()
+
+    assert history[0]["performance"] is None
+    assert history[1]["performance"] == 2.0
+    assert history[2]["performance"] is None
+
+
 class _DummySearcher:
     def __init__(self, config):
         self.strategies = [{"label": "first"}, {"label": "second"}]
