@@ -1,0 +1,27 @@
+defaults:
+  - train_auto_tuner_14b_8xs5000_baseline
+  - _self_
+
+experiment:
+  exp_name: qwen3-14b-s5000-8gpu-profiled-time-prune-topk2
+  exp_dir: outputs/s5000/qwen3_14b_profiled_time_prune/default
+  auto_tuner:
+    algo:
+      name: grid
+      priority: null
+      chip_aware_scoring: true
+      use_profiled_time_cost: true
+      time_cost_pruning:
+        enabled: true
+        mode: family_topk
+        # The A800 Qwen3-14B follow-up found topK=1 fastest, but recommends
+        # topK=2 as the conservative fast setting on new hardware.
+        per_family_topk: 2
+        family_replenish_on_oom: true
+        max_replenish_per_family: 5
+    chip_profile:
+      path: hardware/chip_profiles/musa_s5000_measured_cold.yaml
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra

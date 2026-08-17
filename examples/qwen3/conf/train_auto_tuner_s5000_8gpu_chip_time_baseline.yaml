@@ -1,0 +1,81 @@
+defaults:
+  - train: s5000_tiny
+  - _self_
+
+experiment:
+  exp_name: qwen3-legacy-s5000-8gpu-chip-time-baseline
+  seed: 42
+  save_steps: 10000
+  load: null
+  exp_dir: outputs/s5000/qwen3_legacy_autotune_chip_time_compare/baseline_zero_floor
+  ckpt_format: torch
+  task:
+    type: train
+    backend: megatron
+    entrypoint: flagscale/train/train_gpt.py
+  runner:
+    backend: torchrun
+    per_node_task: false
+    no_shared_fs: false
+    rdzv_backend: static
+    nnodes: 1
+    nproc_per_node: 8
+    hostfile: null
+  cmds:
+    before_start: |
+      ulimit -n 1048576
+      if [ -n "$CONDA_SH" ]; then
+        source "$CONDA_SH"
+      else
+        source /root/anaconda3/etc/profile.d/conda.sh
+      fi
+      if [ -n "$FLAGSCALE_TRAIN_ENV" ]; then
+        conda activate "$FLAGSCALE_TRAIN_ENV"
+      else
+        conda activate s5000-autotune
+      fi
+  envs:
+    LOGLEVEL: "INFO"
+    MUSA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+    CUDA_DEVICE_MAX_CONNECTIONS: "1"
+    NCCL_ALGO: Ring
+    MCCL_DEBUG: "WARN"
+    FLAGSCALE_MUSA_COMPAT: "1"
+  auto_tuner:
+    algo:
+      name: grid
+      priority: null
+      chip_aware_scoring: false
+      use_profiled_time_cost: false
+    chip_profile:
+      path: hardware/chip_profiles/musa_s5000_measured_cold.yaml
+    space:
+      data_parallel_size: [8, 4, 2]
+      use_distributed_optimizer: [false]
+      tensor_model_parallel_size: [1, 2]
+      sequence_parallel: [false]
+      pipeline_model_parallel_size: [1, 2]
+      num_layers_per_virtual_pipeline_stage: [0]
+      context_parallel_size: [1]
+      expert_model_parallel_size: [1]
+      micro_batch_size: [1, 2, 4]
+      use_recompute: [false]
+    control:
+      run_best: false
+      interval: 2
+      max_time_per_task: 180
+      train_iters: 3
+    memory_model:
+      model_name: default
+      gpu_memory: 81920
+      gpu_utilization: [0.0, 1.0]
+
+train:
+  model:
+    global_batch_size: 32
+
+action: auto_tune
+
+hydra:
+  run:
+    dir: ${experiment.exp_dir}/hydra

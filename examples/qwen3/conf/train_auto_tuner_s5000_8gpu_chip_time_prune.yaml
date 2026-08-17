@@ -1,0 +1,19 @@
+defaults:
+  - train_auto_tuner_s5000_8gpu_chip_time_baseline
+  - _self_
+
+experiment:
+  exp_name: qwen3-legacy-s5000-8gpu-chip-time-prune
+  exp_dir: outputs/s5000/qwen3_legacy_autotune_chip_time_compare/chip_time_prune_topk2_zero_floor
+  auto_tuner:
+    algo:
+      name: grid
+      priority: null
+      chip_aware_scoring: true
+      use_profiled_time_cost: true
+      time_cost_pruning:
+        enabled: true
+        mode: family_topk
+        per_family_topk: 2
+        family_replenish_on_oom: true
+        max_replenish_per_family: 5

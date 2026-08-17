@@ -1,0 +1,80 @@
+# Measured cold-start profile for the local 8x MTT S5000 server.
+#
+# This is not a warm-start profile. The two memory calibration biases remain
+# zero, so no model/workload-specific calibration result is folded into the
+# AutoTune comparison.
+#
+# Measurement date: 2026-07-16
+# Software: MUSA 5.1.0, torch_musa 2.9.1, MCCL 2.28.9
+# Topology: 8 S5000 devices, every GPU pair reported as bonded MT2 by
+# `mthreads-gmi topo -mg`.
+# Device memory and bandwidth come from `mthreads-gmi -q --json`.
+# BF16 throughput is the median-scale result of 4096/8192/12288 square GEMMs
+# through torch_musa (334.7/340.5/338.1 TFLOPS).
+# Collective values use BF16 tensors, a 64 MiB payload, and real MCCL. The
+# stored bandwidth unit follows the existing profile schema: Gbit/s.
+
+schema_version: v1alpha1
+
+identity:
+  name: musa_s5000
+  vendor: moore_threads
+  chip_class: gpu
+
+memory:
+  total_memory_mb: 81920
+  bandwidth_gbps: 1600
+
+compute:
+  bf16_tflops: 340
+  attention_tflops: 340
+
+interconnect:
+  intra_node:
+    fabric: mtlink
+    p2p_bandwidth_gbps: 276.268
+    p2p_latency_us: 106.503
+    all_reduce_bandwidth_gbps: 1280.003
+    all_reduce_latency_us: 104.361
+    collective_profiles:
+      all_reduce:
+        group_size_2:
+          bandwidth_gbps: 198.065
+          latency_us: 67.994
+        group_size_4:
+          bandwidth_gbps: 701.214
+          latency_us: 113.081
+        group_size_8:
+          bandwidth_gbps: 1280.003
+          latency_us: 104.361
+  host_device:
+    # PCIe Gen5 x16 is active on every card. These are conservative schema
+    # inputs, not a measured multi-node/network profile.
+    bandwidth_gbps: 256
+    latency_us: 10
+
+kernel_support:
+  # Reflect the currently validated local-transformer environment rather than
+  # unverified hardware potential.
+  transformer_engine: false
+  flash_attention: false
+  fused_rmsnorm: false
+
+topology:
+  max_nodes: 1
+  devices_per_node: 8
+  homogeneous_only: true
+
+strategy_hints:
+  default_search_priority: performance
+  max_tensor_model_parallel_size: 8
+  max_pipeline_model_parallel_size: 8
+  disabled_dims: {}
+
+cost_model:
+  reserved_memory_bias_mb: 0
+  peak_activation_bias_mb: 0
+  overlap:
+    dp_comm_overlap_ratio: 0.0
+    tp_comm_overlap_ratio: 0.0
+    pp_comm_overlap_ratio: 0.0

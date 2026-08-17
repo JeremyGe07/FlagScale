@@ -36,6 +36,7 @@ FABRIC_PENALTIES = {
     "roce": 1.15,
     "infiniband": 1.05,
     "nvlink": 0.85,
+    "mtlink": 0.85,
 }
 DEFAULT_TIME_BREAKDOWN = {
     "compute_ms": 0.0,

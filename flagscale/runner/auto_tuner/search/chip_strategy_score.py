@@ -1,6 +1,7 @@
 _INTERCONNECT_FABRIC_WEIGHT = {
     "nvlink": 1.0,
     "xgmi": 1.0,
+    "mtlink": 1.0,
     "hccs": 0.8,
     "pcie": 0.4,
 }
